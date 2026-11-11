@@ -1,6 +1,7 @@
 #include "../open_launcher/asset_paths.h"
 #include "map_view.h"
 #include "assets.h"
+#include "models.h"
 #include "../open_launcher/install.h"
 
 #include <math.h>
@@ -9,13 +10,16 @@
 
 struct layers {
     SDL_Surface *color, *water, *noise, *height, *normal, *terrain, *rivers, *trees, *atlas, *pine, *water_normal, *tree_tint, *underwater;
-    SDL_Surface *reflection[6];
+    SDL_Surface *reflection[6], *frame_diffuse;
+    struct ck2_model frame_model;
+    float *frame_depth;
 };
 
 struct rgb { int r, g, b; };
 
 struct water_pixel {
     Uint32 screen, base;
+    float x, y;
 };
 
 struct map_water {
@@ -223,11 +227,13 @@ static int load_layers(struct layers *layers, const char *root)
 static void free_layers(struct layers *layers)
 {
     SDL_Surface *surfaces[] = {layers->color, layers->water, layers->noise, layers->height,
-        layers->normal, layers->terrain, layers->rivers, layers->trees, layers->atlas, layers->pine, layers->water_normal, layers->tree_tint, layers->underwater};
+        layers->normal, layers->terrain, layers->rivers, layers->trees, layers->atlas, layers->pine, layers->water_normal, layers->tree_tint, layers->underwater, layers->frame_diffuse};
     for (size_t i = 0; i < SDL_arraysize(surfaces); ++i)
         SDL_FreeSurface(surfaces[i]);
     for (int i = 0; i < 6; ++i)
         SDL_FreeSurface(layers->reflection[i]);
+    ck2_model_free(&layers->frame_model);
+    free(layers->frame_depth);
 }
 
 static unsigned index_at(const SDL_Surface *surface, int x, int y)
@@ -241,11 +247,23 @@ static struct rgb rgb_at(const SDL_Surface *surface, int x, int y)
     return (struct rgb){pixel[2], pixel[1], pixel[0]};
 }
 
+static struct rgb rgb_repeat(const SDL_Surface *surface, SDL_Rect region, float u, float v)
+{
+    u -= floorf(u / region.w) * region.w;
+    v -= floorf(v / region.h) * region.h;
+    const int x = (int)u, y = (int)v;
+    const int next_x = x + 1 == region.w ? 0 : x + 1;
+    const int next_y = y + 1 == region.h ? 0 : y + 1;
+    const int fx = (int)((u - x) * 256), fy = (int)((v - y) * 256);
+    const struct rgb top = mix(rgb_at(surface, region.x + x, region.y + y),
+                               rgb_at(surface, region.x + next_x, region.y + y), fx, 256);
+    const struct rgb bottom = mix(rgb_at(surface, region.x + x, region.y + next_y),
+                                  rgb_at(surface, region.x + next_x, region.y + next_y), fx, 256);
+    return mix(top, bottom, fy, 256);
+}
+
 static float elevation(const struct layers *layers, int x, int y)
 {
-    /* The installed water shader places the shoreline at a heightmap value of 93.7. */
-    if (index_at(layers->rivers, x, y) == 254)
-        return 0.0f;
     return SDL_max(0.0f, (index_at(layers->height, x, y) - 94.0f) * 0.40f);
 }
 
@@ -264,7 +282,7 @@ static Uint32 hash_pixel(unsigned x, unsigned y)
     return value ^ (value >> 15);
 }
 
-static struct rgb shade_water(const struct layers *layers, int x, int y)
+static struct rgb shade_water(const struct layers *layers, int x, int y, float wx, float wy)
 {
     const struct rgb tint = rgb_at(layers->water, x, y);
     const float height = (float)index_at(layers->height, x, y);
@@ -272,7 +290,7 @@ static struct rgb shade_water(const struct layers *layers, int x, int y)
     const SDL_Surface *detail = layers->underwater;
     struct rgb ground = {66, 80, 99};
     if (detail)
-        ground = mix(ground, rgb_at(detail, x * 2 % detail->w, y * 2 % detail->h), 30, 100);
+        ground = mix(ground, rgb_repeat(detail, (SDL_Rect){0, 0, detail->w, detail->h}, wx * 2, wy * 2), 30, 100);
     struct rgb water = mix(ground, tint, 30, 100);
     return mix(water, rgb_at(layers->color, x, y), shore / 2, 100);
 }
@@ -283,9 +301,8 @@ static struct rgb shade_land(const struct layers *layers, int x, int y, float wx
     const unsigned tile = index_at(layers->terrain, x, y) & 15;
     const float repeat = 128.0f / (float)layers->color->h;
     const float u = wx * repeat, v = wy * repeat;
-    const int atlas_x = (int)(tile % 4) * 512 + (int)((u - floorf(u)) * 511.0f);
-    const int atlas_y = (int)(tile / 4) * 512 + (int)((v - floorf(v)) * 511.0f);
-    const struct rgb detail = rgb_at(layers->atlas, atlas_x, atlas_y);
+    const SDL_Rect cell = {(int)(tile % 4) * 512, (int)(tile / 4) * 512, 512, 512};
+    const struct rgb detail = rgb_repeat(layers->atlas, cell, u * cell.w, v * cell.h);
     const struct rgb normal = rgb_at(layers->normal, x, y);
     const float lighting = SDL_clamp(0.96f + (128 - normal.r) * 0.0043f +
         (128 - normal.g) * 0.0035f + (normal.b - 255) * 0.0040f, 0.46f, 1.44f);
@@ -318,9 +335,27 @@ static struct camera camera_for(const struct map_view *view, bool campaign)
                            view->height * (campaign ? 1.11f : 1.24f)};
 }
 
+/* Flat fallback for installations without a supported frame actor. */
+static Uint32 shade_map_frame(const struct map_view *view, const SDL_Surface *texture,
+                              float x, float y)
+{
+    const float rail = 64.0f;
+    const float horizontal = x < 0 ? -x : x - view->world_width;
+    const float vertical = y < 0 ? -y : y - view->world_height;
+    const float distance = SDL_max(horizontal, vertical);
+    if (!texture || distance < 0 || distance >= rail)
+        return 0xffa5a2ae;
+
+    const float along = horizontal >= vertical ? y : x;
+    const float repeat = along / (rail * texture->w / texture->h);
+    const int u = (int)((repeat - floorf(repeat)) * texture->w);
+    const int v = (int)((1.0f - distance / rail) * (texture->h - 1));
+    return pack(rgb_at(texture, u, v));
+}
+
 static void render_row(const struct map_view *view, const struct layers *layers,
                         struct camera camera, int y, Uint32 *output, Uint32 *samples,
-                        struct map_water *water)
+                        struct map_water *water, bool campaign)
 {
     const float vertical = (view->height * 0.5f - (y + 0.5f)) / camera.focal;
     const float ray_y = camera.forward_y + vertical * camera.forward_height;
@@ -343,21 +378,115 @@ static void render_row(const struct map_view *view, const struct layers *layers,
             my = (int)wy;
             distance = (elevation(layers, mx, my) - camera.height) / ray_height;
         }
+        if (layers->frame_depth)
+            layers->frame_depth[(size_t)y * view->width + x] =
+                on_map ? 1.0f / distance : 0.0f;
         if (!on_map) {
             samples[x] = SDL_MAX_UINT32;
-            output[x] = 0xff3d4d60;
+            output[x] = campaign
+                ? shade_map_frame(view, layers->frame_depth ? NULL : layers->frame_diffuse,
+                                  camera.x + ray_x * flat_distance, camera.y + ray_y * flat_distance)
+                : 0xff3d4d60;
             continue;
         }
 
         samples[x] = (Uint32)((size_t)my * view->world_width + mx);
-        const bool ocean = index_at(layers->rivers, mx, my) == 254;
-        output[x] = pack(ocean ? shade_water(layers, mx, my)
+        /* The water shader's 93.7 reference height also covers land where
+           the river bitmap has no valid channel data, such as Iceland. */
+        const bool ocean = index_at(layers->height, mx, my) < 94;
+        output[x] = pack(ocean ? shade_water(layers, mx, my, wx, wy)
                                : shade_land(layers, mx, my, wx, wy));
         if (ocean)
             water->pixels[water->count++] = (struct water_pixel){
-                (Uint32)((size_t)y * view->width + x), output[x]
+                (Uint32)((size_t)y * view->width + x), output[x], wx, wy
             };
     }
+}
+
+struct projected_vertex {
+    float x, y, inverse_depth, u, v, light;
+};
+
+static float edge(struct projected_vertex a, struct projected_vertex b, float x, float y)
+{
+    return (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x);
+}
+
+static void draw_frame_triangle(const struct map_view *view, struct projected_vertex a,
+                                struct projected_vertex b, struct projected_vertex c)
+{
+    if (a.inverse_depth <= 0 || b.inverse_depth <= 0 || c.inverse_depth <= 0)
+        return;
+    const float area = edge(a, b, c.x, c.y);
+    if (fabsf(area) < 0.001f)
+        return;
+
+    const struct layers *layers = view->layers;
+    const SDL_Surface *texture = layers->frame_diffuse;
+    const SDL_Rect tile = {0, 0, texture->w, texture->h};
+    SDL_Surface *frame = view->water->frame;
+    const int left = (int)SDL_clamp(floorf(SDL_min(a.x, SDL_min(b.x, c.x))), 0, frame->w);
+    const int right = (int)SDL_clamp(ceilf(SDL_max(a.x, SDL_max(b.x, c.x))), 0, frame->w);
+    const int top = (int)SDL_clamp(floorf(SDL_min(a.y, SDL_min(b.y, c.y))), 0, frame->h);
+    const int bottom = (int)SDL_clamp(ceilf(SDL_max(a.y, SDL_max(b.y, c.y))), 0, frame->h);
+
+    for (int y = top; y < bottom; ++y) {
+        Uint32 *row = (Uint32 *)((Uint8 *)frame->pixels + (size_t)y * frame->pitch);
+        for (int x = left; x < right; ++x) {
+            const float wa = edge(b, c, x + 0.5f, y + 0.5f) / area;
+            const float wb = edge(c, a, x + 0.5f, y + 0.5f) / area;
+            const float wc = edge(a, b, x + 0.5f, y + 0.5f) / area;
+            if (wa < 0 || wb < 0 || wc < 0)
+                continue;
+            const float pa = wa * a.inverse_depth, pb = wb * b.inverse_depth, pc = wc * c.inverse_depth;
+            const float depth = pa + pb + pc;
+            const size_t pixel = (size_t)y * frame->w + x;
+            if (depth <= layers->frame_depth[pixel])
+                continue;
+            const float u = (pa * a.u + pb * b.u + pc * c.u) / depth;
+            const float v = (pa * a.v + pb * b.v + pc * c.v) / depth;
+            const float light = (pa * a.light + pb * b.light + pc * c.light) / depth;
+            const struct rgb texel = rgb_repeat(texture, tile, u * tile.w, v * tile.h);
+            row[x] = pack((struct rgb){(int)(texel.r * light), (int)(texel.g * light),
+                                       (int)(texel.b * light)});
+            layers->frame_depth[pixel] = depth;
+            view->samples[pixel] = SDL_MAX_UINT32;
+        }
+    }
+}
+
+static void draw_map_frame(const struct map_view *view, struct camera camera)
+{
+    const struct layers *layers = view->layers;
+    const struct ck2_model *model = &layers->frame_model;
+    if (!layers->frame_depth)
+        return;
+
+    struct projected_vertex *points = malloc(model->vertex_count * sizeof *points);
+    if (!points)
+        return;
+    /* Frame actors use roughly one model unit per 100 map texels. */
+    const float scale = model->scale * 100.0f;
+    for (size_t i = 0; i < model->vertex_count; ++i) {
+        const struct ck2_model_vertex v = model->vertices[i];
+        const float dy = view->world_height - v.z * scale - camera.y;
+        const float dh = (v.y - 0.098f) * scale - camera.height;
+        const float depth = dy * camera.forward_y + dh * camera.forward_height;
+        if (depth < 1.0f) {
+            points[i] = (struct projected_vertex){0};
+            continue;
+        }
+        const float zoom = camera.focal / depth;
+        points[i] = (struct projected_vertex){
+            view->width * 0.5f + (v.x * scale - camera.x) * zoom,
+            view->height * 0.5f - (dy * camera.forward_height - dh * camera.forward_y) * zoom,
+            1.0f / depth, v.u, v.v, 0.65f + 0.35f * SDL_clamp(v.ny, 0.0f, 1.0f)
+        };
+    }
+    for (size_t i = 0; i < model->index_count; i += 3)
+        draw_frame_triangle(view, points[model->indices[i]], points[model->indices[i + 1]],
+                            points[model->indices[i + 2]]);
+    free(points);
 }
 
 static struct rgb unpack(Uint32 color)
@@ -460,13 +589,12 @@ static void shade_waves(struct map_view *view, Uint64 now)
     const int phase = (int)((now / 65) % 4096);
     for (size_t i = 0; i < water->count; ++i) {
         const struct water_pixel pixel = water->pixels[i];
-        const Uint32 world = view->samples[pixel.screen];
-        const int x = (int)(world % (unsigned)view->world_width);
-        const int y = (int)(world / (unsigned)view->world_width);
-        const struct rgb a = rgb_at(noise, (x * 5 + y + phase) % noise->w,
-                                    (y * 5 + x / 2 + phase * 2) % noise->h);
-        const struct rgb b = rgb_at(noise, (x * 7 + y + 16384 - phase * 3) % noise->w,
-                                    (y * 7 + x / 3 + 8192 - phase) % noise->h);
+        const float x = pixel.x, y = pixel.y;
+        const SDL_Rect noise_tile = {0, 0, noise->w, noise->h};
+        const struct rgb a = rgb_repeat(noise, noise_tile, x * 5 + y + phase,
+                                        y * 5 + x / 2 + phase * 2);
+        const struct rgb b = rgb_repeat(noise, noise_tile, x * 7 + y - phase * 3,
+                                        y * 7 + x / 3 - phase);
         float nx = (a.r + b.r - 255) / 255.f;
         float ny = (a.b + b.b - 255) / 255.f + 1.5f;
         float nz = (a.g + b.g - 255) / 255.f;
@@ -482,8 +610,8 @@ static void shade_waves(struct map_view *view, Uint64 now)
         const int fresnel = 20 + (int)(80 * f4 * f4 * f2);
         const struct rgb reflection = reflect_color(water, ex - 2 * dot * nx,
                                                     ey - 2 * dot * ny, ez - 2 * dot * nz);
-        const struct rgb ripples = rgb_at(normal, (x * 9 + y + phase * 3) % normal->w,
-                                           (y * 15 + x / 3 + phase) % normal->h);
+        const struct rgb ripples = rgb_repeat(normal, (SDL_Rect){0, 0, normal->w, normal->h},
+                                               x * 9 + y + phase * 3, y * 15 + x / 3 + phase);
         struct rgb color = mix(unpack(pixel.base), reflection, fresnel, 100);
         const int wave = (ripples.r - 128) / 13;
         color.r += wave;
@@ -516,16 +644,18 @@ static int render_view(struct map_view *view, bool campaign)
     water->count = 0;
     for (int y = 0; y < view->height; ++y) {
         Uint32 *row = (Uint32 *)((Uint8 *)water->frame->pixels + (size_t)y * water->frame->pitch);
-        render_row(view, layers, camera, y, row, view->samples + (size_t)y * view->width, water);
+        render_row(view, layers, camera, y, row, view->samples + (size_t)y * view->width, water, campaign);
     }
 
     draw_forest(water->frame, layers, camera);
+    draw_map_frame(view, camera);
     size_t visible = 0;
     for (size_t i = 0; i < water->count; ++i) {
         const struct water_pixel pixel = water->pixels[i];
         const Uint32 *row = (const Uint32 *)((const Uint8 *)water->frame->pixels +
             (size_t)(pixel.screen / (unsigned)view->width) * water->frame->pitch);
-        if (row[pixel.screen % (unsigned)view->width] == pixel.base)
+        if (view->samples[pixel.screen] != SDL_MAX_UINT32 &&
+            row[pixel.screen % (unsigned)view->width] == pixel.base)
             water->pixels[visible++] = pixel;
     }
     water->count = visible;
@@ -551,6 +681,18 @@ int map_view_build(struct map_view *view, SDL_Renderer *renderer, const char *ro
     view->height = height;
     view->world_width = view->layers->color->w;
     view->world_height = view->layers->color->h;
+    if (campaign) {
+        struct layers *layers = view->layers;
+        char actor[32];
+        SDL_snprintf(actor, sizeof actor, "frame%d", view->world_width);
+        if (ck2_model_load(&layers->frame_model, root, actor) && *layers->frame_model.diffuse) {
+            layers->frame_diffuse = ck2_load_dds_surface(root, layers->frame_model.diffuse);
+            if (layers->frame_diffuse)
+                layers->frame_depth = malloc((size_t)width * height * sizeof *layers->frame_depth);
+        }
+        if (!layers->frame_diffuse)
+            layers->frame_diffuse = ck2_load_dds_surface(root, "gfx/models/Mapitems/Frame_Diffuse.dds");
+    }
     view->zoom = 1;
     view->center_x = 790;
     view->center_y = (float)view->world_height - 1035;

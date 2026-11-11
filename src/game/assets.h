@@ -17,7 +17,7 @@ struct menu_assets {
     SDL_Texture *hud_ruler, *hud_resources_left, *hud_resources_right, *hud_date;
     SDL_Texture *hud_minimap, *hud_map, *hud_province, *hud_outliner, *hud_arms;
     SDL_Texture *lobby_left, *lobby_right, *lobby_characters, *lobby_row, *lobby_date, *lobby_bookmark, *lobby_tooltip, *religion_icons;
-    SDL_Texture *mapmode_terrain, *mapmode_realms;
+    SDL_Texture *setup_modes[8], *setup_world[2], *setup_world_ornament;
     SDL_Texture *holding_art[6], *holding_frame, *holding_capital;
     SDL_Texture *hud_tabs[8];
     SDL_Texture *dlc_icons[CK2_DLC_ICON_COUNT];

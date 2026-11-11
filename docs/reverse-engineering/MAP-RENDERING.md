@@ -49,3 +49,128 @@ the underlying province map. Labels use Mapfont and derive their size,
 angle, and position from visible territory pixels. Collision placement
 keeps prominent labels visible where space permits. CK2's curved-label
 layout and dynamic changes from conquest remain pending.
+
+## Iceland and the northwest edge
+
+**Installed data and OpenCK2 reproduction.** The local 3072 × 2048
+`provinces.bmp` contains all four Iceland counties. Join the RGB values in
+`map/definition.csv` for IDs 1, 2, 1616, and 1617 to the corresponding
+pixels in `provinces.bmp`, then compare the same coordinates in
+`topology.bmp` and `rivers.bmp`. Count a point as above the waterline
+when its topology value is at least 94. This gives the following counts
+on the local Steam install:
+
+| County ID | Above-water pixels | Of those, river index 254 |
+| --- | ---: | ---: |
+| 1 (Vestisland) | 4,519 | 4,519 |
+| 2 (Austisland) | 5,708 | 5,708 |
+| 1616 (Nordland) | 6,309 | 6,309 |
+| 1617 (Sudurland) | 5,513 | 2,701 |
+
+OpenCK2 interpreted river index 254 as ocean, discarded the terrain
+elevation there, and shaded those coordinates as water. The Realms pass
+still read the county IDs from the province bitmap. The resulting
+combination explains the flat, tinted land and the visible change in
+shading across southern Iceland. The terrain pass now uses the topology
+waterline for elevation and surface classification, with river indices
+used for channel coloring. This is a CPU approximation of the
+terrain/water split in `pdxmap.lua` and `pdxwater.lua`.
+
+The angled cutoff beside Iceland is the projected northwest edge of the
+map. OpenCK2 previously filled everything beyond it with a flat blue-gray
+color. `interface/mapitems.gfx` declares the installed `frame3072.xac`
+actor. The map now resolves that actor by name and draws its original
+528 triangles and 1024 × 256 BC3 diffuse texture with the map camera.
+Perspective-correct UVs preserve the wood pattern on the bevel and inner
+wall. The depth test keeps the frame in front of the water where they
+overlap and removes those pixels from province selection. The former
+flat border serves as a fallback when the local model or its texture
+cannot be loaded.
+
+The current frame transform is inferred from the model coordinates and
+the 3072 × 2048 map. It uses approximately 100 map units per model unit
+and places the base of the inner wall at water level. Shading uses the
+mesh normals and diffuse texture. The original normal and specular maps
+and the precise native transform are still pending. A bounded REA/Ghidra
+search for `frame3072` timed out in the earlier investigation. The next
+native probe is to trace the actor's render submission and material setup.
+
+At the 769 bookmark all four county histories name the same holder.
+OpenCK2 currently labels equal-rank county titles separately. The vanilla
+reference shows a prominent Vestisland label at close zoom. The native
+primary-title and label selection logic still needs investigation.
+
+## Setup toolbar and image quality
+
+**Installed interface definitions.** `interface/frontend.gui` supplies
+the position and order of the eight setup map buttons.
+`interface/alternate_start.gfx` resolves the large Shattered World and
+Random World buttons and ornaments to the installed DDS art. Terrain and
+Realms are interactive. The other six modes and the two world buttons
+show the shared red “Not developed yet” tooltip on hover.
+
+**Renderer comparison.** The artwork is read from the local CK2
+installation. The visual differences come from how it is sampled and
+composited:
+
+- The main menu, setup and campaign maps are rendered into a fixed
+  1600 × 900 CPU raster. SDL scales it to the window, so a 1920 × 1080
+  or larger output still starts from the same raster. The interface
+  also uses fixed logical coordinates and bitmap fonts.
+- The former water pass evaluated all animated noise at whole map
+  pixels. Zoom magnified each sample into a visible block. The current
+  pass retains the fractional world hit, and bilinearly samples
+  repeating water noise, water normals, underwater detail, and terrain
+  atlas tiles. Province IDs and terrain type IDs still use integer
+  lookup.
+- Vanilla's installed `pdxmap.lua` and `pdxwater.lua` specify linear
+  sampling and mip filtering for many layers. OpenCK2 still uses a
+  CPU heightfield, fixed-resolution reflection faces, simple river
+  coloring, pixel-difference province outlines, and approximate
+  lighting. Zoomed-out detail can still alias, and smooth continuous
+  borders and refraction remain missing.
+
+For a repeatable visual check, open the 769 bookmark through
+Single Player → New Game → Custom Game Setup and pan northwest in
+Realms mode. Check the four Iceland counties, coast, and wooden corner,
+then hover over a world button and a deferred map mode. For a rendering
+comparison, capture Iceland and Northumbria at matching camera coverage
+and output size. Compare the shoreline, province borders, water detail,
+and UI independently before changing mip selection or render resolution.
+
+The local OpenCK2 run showed all four Iceland counties with relief, the
+wooden northwest corner, and the red tooltips over Shattered World and
+a deferred map mode. The comparison uses the supplied vanilla
+screenshots and the local CK2 files.
+
+## Interface model loading
+
+`src/game/models.c` looks up model names inside `objectTypes` in
+top-level `interface/*.gfx` files. It reads `EMFXActorType` and
+`pdxmesh` declarations through the existing asset resolver so mounted
+content participates in path lookup. The loader imports positions,
+normals, primary UVs, and triangle indices from little-endian XAC
+and Clausewitz binary mesh files. It also reads the declared scale and
+the first diffuse texture reference. The format reference for the
+Clausewitz binary properties is the
+[IO PDX Mesh reader](https://github.com/ross-g/io_pdx_mesh/blob/master/pdx_data.py).
+
+A local sweep extracted unique model names from the shipped `.gfx`
+declarations and loaded each by name against the base Steam installation.
+All 314 XAC actor names and all 56 PDX mesh names in the sweep returned
+static geometry. Separate runtime checks panned to Iceland and zoomed
+in to verify the frame's corner and visible inner wall. The sweep covers
+base model geometry. It does not exercise installed DLC or mod variants,
+texture compatibility for every model, or the appearance of other actors
+in game.
+
+Next steps for interface compatibility:
+
+1. Preserve material bindings per mesh part, then support normal and
+   specular textures, shader selection, and level-of-detail switching.
+2. Recover skeletons, skin weights, XSM and Clausewitz animations, actor
+   attachments, and scene placement. Verify one unit, settlement, and
+   shield against vanilla before broadening rendering support.
+3. Extend interface coverage beyond models. Audit the existing sprite,
+   portrait, font, and GUI loaders against shipped declarations and
+   implement missing widget layout, interaction, and engine bindings.

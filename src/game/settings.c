@@ -150,7 +150,7 @@ void settings_unavailable_tooltip(SDL_Renderer *renderer, const struct menu_asse
     SDL_SetRenderDrawColor(renderer, 123, 75, 69, 255);
     SDL_RenderDrawRect(renderer, &box);
     SDL_SetTextureColorMod(assets->font, 255, 105, 105);
-    label(renderer, assets, text, "Not yet devleped.", box.x + box.w / 2, box.y + 4);
+    label(renderer, assets, text, "Not developed yet", box.x + box.w / 2, box.y + 4);
     SDL_SetTextureColorMod(assets->font, 255, 255, 255);
 }
 

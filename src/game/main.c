@@ -466,7 +466,29 @@ static const SDL_Rect setup_list = {0, 0, 226, 483};
 static const SDL_Rect setup_info = {1374, 0, 226, 565};
 static const SDL_Rect setup_holdings = {1374, 570, 226, 208};
 static const SDL_Rect setup_liege = {1388, 253, 198, 25};
-static const SDL_Rect setup_modes = {759, 63, 82, 29};
+enum { SETUP_MODE_COUNT = 8 };
+static const SDL_Rect setup_world[] = {{559, 2, 83, 84}, {956, 2, 83, 84}};
+
+static SDL_Rect setup_mode_area(int index)
+{
+    return (SDL_Rect){673 + index * 28, 69, 28, 22};
+}
+
+static int setup_mode_at(SDL_Point point)
+{
+    for (int i = 0; i < SETUP_MODE_COUNT; ++i) {
+        const SDL_Rect area = setup_mode_area(i);
+        if (SDL_PointInRect(&point, &area))
+            return i;
+    }
+    return -1;
+}
+
+static bool setup_deferred(SDL_Point point)
+{
+    return setup_mode_at(point) >= 2 || SDL_PointInRect(&point, &setup_world[0]) ||
+           SDL_PointInRect(&point, &setup_world[1]);
+}
 enum { VASSAL_ROWS = 4 };
 
 static SDL_Rect bookmark_area(int index)
@@ -542,14 +564,19 @@ static void draw_setup(SDL_Renderer *renderer, const struct menu_assets *assets,
     char date[48];
     const struct starting_era *era = &menu->era.eras[menu->era.selected];
     format_campaign_date(date, sizeof date, era->date);
+    SDL_RenderCopy(renderer, assets->setup_world_ornament, NULL, &(SDL_Rect){502, 1, 198, 86});
+    SDL_RenderCopy(renderer, assets->setup_world_ornament, NULL, &(SDL_Rect){899, 1, 198, 86});
+    for (size_t i = 0; i < SDL_arraysize(setup_world); ++i)
+        SDL_RenderCopy(renderer, assets->setup_world[i], NULL, &setup_world[i]);
     SDL_RenderCopy(renderer, assets->lobby_date, NULL, &(SDL_Rect){646, 0, 309, 95});
     SDL_SetTextureColorMod(small.font, 39, 26, 15);
     campaign_text(renderer, &small, date, 800, 28);
     SDL_SetTextureColorMod(small.font, 255, 255, 255);
-    SDL_RenderCopy(renderer, assets->mapmode_terrain, &(SDL_Rect){0, 0, 28, 22},
-                   &(SDL_Rect){setup_modes.x + 6, setup_modes.y, 28, 22});
-    SDL_RenderCopy(renderer, assets->mapmode_realms, &(SDL_Rect){0, 0, 28, 22},
-                   &(SDL_Rect){setup_modes.x + 44, setup_modes.y, 28, 22});
+    for (int i = 0; i < SETUP_MODE_COUNT; ++i) {
+        const SDL_Rect area = setup_mode_area(i);
+        const bool hover = SDL_PointInRect(&menu->pointer, &area);
+        SDL_RenderCopy(renderer, assets->setup_modes[i], &(SDL_Rect){hover ? 28 : 0, 0, 28, 22}, &area);
+    }
     campaign_text(renderer, &small, "Click a county to select its ruler  |  Shift-click for the realm", 800, 92);
 
     SDL_RenderCopy(renderer, assets->lobby_left, NULL, &setup_list);
@@ -787,8 +814,11 @@ static void select_setup_title(struct menu *menu, const struct realm_title_info 
 
 static bool setup_select(struct menu *menu, SDL_Window *window, SDL_Point point)
 {
-    if (SDL_PointInRect(&point, &setup_modes)) {
-        const bool realms = point.x >= setup_modes.x + setup_modes.w / 2;
+    if (setup_deferred(point))
+        return true;
+    const int mode = setup_mode_at(point);
+    if (mode >= 0) {
+        const bool realms = mode == 1;
         if (realms && !menu->realms_visible)
             menu->realms_visible = load_realms(menu, window, menu->era.eras[menu->era.selected].date);
         else if (!realms)
@@ -959,8 +989,12 @@ static void draw(SDL_Renderer *renderer,
         (menu->screen == STARTING_ERA && (era_menu_deferred(&menu->era, menu->pointer) ||
          (menu->hover == START_ERA && menu->era.selected >= 0 && !era_menu_can_start(&menu->era)))))
         settings_unavailable_tooltip(renderer, assets, centered_text, menu->pointer);
-    if (menu->screen == MAP_SETUP)
-        setup_tooltip(renderer, assets, menu);
+    if (menu->screen == MAP_SETUP) {
+        if (setup_deferred(menu->pointer))
+            settings_unavailable_tooltip(renderer, assets, centered_text, menu->pointer);
+        else
+            setup_tooltip(renderer, assets, menu);
+    }
     SDL_RenderPresent(renderer);
 }
 
