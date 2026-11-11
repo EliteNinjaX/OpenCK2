@@ -1,16 +1,32 @@
 #include "ck2_script.h"
 #include "holdings.h"
 #include <stdio.h>
+#include <stdbool.h>
 #include <string.h>
 
 int main(int argc, char **argv)
 {
     struct campaign_date date;
     char extra;
+    /* Validate calendar date using Gregorian leap year rules */
     if (argc != 3 || sscanf(argv[2], "%4d.%2d.%2d%c", &date.year, &date.month, &date.day, &extra) != 3 ||
-        date.year < 1 || date.month < 1 || date.month > 12 || date.day < 1 || date.day > 31) {
+        date.year < 1 || date.month < 1 || date.month > 12 || date.day < 1) {
         fprintf(stderr, "Usage: holding-audit CK2_DIRECTORY YEAR.MONTH.DAY\n");
         return 1;
+    }
+    /* Check February days with leap year rules */
+    bool is_leap = (date.year % 4 == 0 && date.year % 100 != 0) || (date.year % 400 == 0);
+    int feb_max_day = is_leap ? 29 : 28;
+    if (date.month == 2 && date.day > feb_max_day) {
+        fprintf(stderr, "Usage: holding-audit CK2_DIRECTORY YEAR.MONTH.DAY\n");
+        return 1;
+    }
+    /* Check April, June, September, November days */
+    for (int m = 4; m <= 11; m += 2) {
+        if (date.month == m && date.day > 30) {
+            fprintf(stderr, "Usage: holding-audit CK2_DIRECTORY YEAR.MONTH.DAY\n");
+            return 1;
+        }
     }
 
     struct province_map map = {0};
