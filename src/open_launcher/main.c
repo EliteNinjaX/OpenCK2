@@ -1,4 +1,5 @@
 #define _XOPEN_SOURCE 700
+#include "../version.h"
 #include "install.h"
 #include "catalog.h"
 #include "../game/assets.h"
@@ -15,7 +16,7 @@ extern char **environ;
 
 enum { WIDTH = 1000, HEIGHT = 600, ROW_HEIGHT = 33, VISIBLE_ROWS = 11, ROW_TOP = 128, SCROLL_SIZE = 16 };
 enum page { DLC_PAGE, MODS_PAGE, SETTINGS_PAGE };
-static const char version[] = "OpenCK2 0.1.0";
+static const char version[] = OPENCK2_VERSION_LABEL;
 enum action { NONE, QUIT, DLC_TAB, MODS_TAB, MASTER, SETTINGS, BROWSE, PLAY };
 enum choice { CANCELLED, REJECTED, SELECTED, CHOOSER_ERROR };
 
@@ -159,8 +160,10 @@ static void draw_path(SDL_Renderer *renderer, const struct theme *theme, const c
     SDL_RenderSetClipRect(renderer, NULL);
 }
 
-static bool visible(enum page page, enum action action)
+static bool visible(enum page page, enum action action, bool content_only)
 {
+    if (content_only && (action == QUIT || action == SETTINGS))
+        return false;
     if (action == BROWSE)
         return page == SETTINGS_PAGE;
     if (action == DLC_TAB || action == MODS_TAB || action == MASTER)
@@ -341,7 +344,7 @@ static void draw_catalog(SDL_Renderer *renderer, const struct theme *theme,
 static void draw(SDL_Renderer *renderer, const struct theme *theme, const char *directory,
                  const struct content_catalog *catalog, const struct dlc_view *view,
                  enum page page, size_t first, enum action focus, enum action hover,
-                 SDL_Point pointer)
+                 SDL_Point pointer, bool content_only)
 {
     const SDL_Rect panel = {600, 70, 388, 460};
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
@@ -365,13 +368,14 @@ static void draw(SDL_Renderer *renderer, const struct theme *theme, const char *
 
     for (int i = QUIT; i <= PLAY; ++i) {
         const enum action action = (enum action)i;
-        if (!visible(page, action))
+        if (!visible(page, action, content_only))
             continue;
         const SDL_Rect *area = &button_areas[i];
         if (action == MASTER) {
-            const bool checked = ck2_catalog_all_enabled(catalog);
+            const struct content_list *list = page == MODS_PAGE ? &catalog->mods : &catalog->dlc;
+            const bool checked = ck2_content_all_enabled(list);
             draw_checkbox(renderer, theme, area, checked,
-                          !checked && ck2_catalog_any_enabled(catalog),
+                          !checked && ck2_content_any_enabled(list),
                           action == hover || action == focus);
             continue;
         }
@@ -388,7 +392,8 @@ static void draw(SDL_Renderer *renderer, const struct theme *theme, const char *
             SDL_SetTextureColorMod(texture, brightness, brightness, brightness);
             SDL_RenderCopy(renderer, texture, NULL, area);
         }
-        const char *label = action == SETTINGS && page == SETTINGS_PAGE ? "Back" : button_labels[i];
+        const char *label = action == PLAY && content_only ? "Done" :
+                            action == SETTINGS && page == SETTINGS_PAGE ? "Back" : button_labels[i];
         text(renderer, theme, label, strlen(label),
              area->x + area->w / 2, area->y + (area->h - 22) / 2, true);
     }
@@ -488,11 +493,11 @@ static enum choice choose_install(SDL_Window *window, SDL_Renderer *renderer, st
     return SELECTED;
 }
 
-static enum action hit(enum page page, int x, int y)
+static enum action hit(enum page page, int x, int y, bool content_only)
 {
     SDL_Point point = {x, y};
     for (int i = QUIT; i <= PLAY; ++i) {
-        if (visible(page, (enum action)i) && SDL_PointInRect(&point, &button_areas[i]))
+        if (visible(page, (enum action)i, content_only) && SDL_PointInRect(&point, &button_areas[i]))
             return (enum action)i;
     }
     return NONE;
@@ -539,7 +544,7 @@ static void scrollbar_drag(size_t count, int y, int drag_offset,
 }
 
 static bool run_launcher(SDL_Window *window, SDL_Renderer *renderer, struct theme *theme,
-                         char **directory, const char *settings, const char *selection, const char *game)
+                         char **directory, const char *settings, const char *selection, const char *game, bool content_only)
 {
     enum action focus = PLAY, hover = NONE;
     enum page page = DLC_PAGE, previous_page = DLC_PAGE;
@@ -554,7 +559,7 @@ static bool run_launcher(SDL_Window *window, SDL_Renderer *renderer, struct them
     rebuild_dlc_view(&view, &catalog.dlc);
 
     SDL_ShowWindow(window);
-    draw(renderer, theme, *directory, &catalog, &view, page, first, focus, hover, pointer);
+    draw(renderer, theme, *directory, &catalog, &view, page, first, focus, hover, pointer, content_only);
 
     bool play = false;
     SDL_Event event;
@@ -569,7 +574,7 @@ static bool run_launcher(SDL_Window *window, SDL_Renderer *renderer, struct them
             if (drag_offset >= 0 && page != SETTINGS_PAGE)
                 scrollbar_drag(count, event.motion.y, drag_offset, &first);
             else
-                hover = hit(page, event.motion.x, event.motion.y);
+                hover = hit(page, event.motion.x, event.motion.y, content_only);
         }
         if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT &&
             page != SETTINGS_PAGE) {
@@ -592,7 +597,7 @@ static bool run_launcher(SDL_Window *window, SDL_Renderer *renderer, struct them
             drag_offset = -1;
             SDL_CaptureMouse(SDL_FALSE);
         } else if (event.type == SDL_MOUSEBUTTONUP && event.button.button == SDL_BUTTON_LEFT) {
-            action = hit(page, event.button.x, event.button.y);
+            action = hit(page, event.button.x, event.button.y, content_only);
             const SDL_Rect rows = {622, ROW_TOP, 332, VISIBLE_ROWS * ROW_HEIGHT};
             const SDL_Point pointer = {event.button.x, event.button.y};
             if (action == NONE && page != SETTINGS_PAGE && SDL_PointInRect(&pointer, &rows)) {
@@ -636,7 +641,7 @@ static bool run_launcher(SDL_Window *window, SDL_Renderer *renderer, struct them
                 const int direction = event.key.keysym.mod & KMOD_SHIFT ? -1 : 1;
                 do {
                     focus = (enum action)(QUIT + (focus - QUIT + direction + PLAY) % PLAY);
-                } while (!visible(page, focus));
+                } while (!visible(page, focus, content_only));
                 hover = NONE;
                 break;
             }
@@ -655,7 +660,8 @@ static bool run_launcher(SDL_Window *window, SDL_Renderer *renderer, struct them
         }
 
         if (action == MASTER) {
-            ck2_catalog_set_all(&catalog, !ck2_catalog_all_enabled(&catalog));
+            struct content_list *list = page == MODS_PAGE ? &catalog.mods : &catalog.dlc;
+            ck2_content_set_all(list, !ck2_content_all_enabled(list));
             changed = true;
         }
         if (changed && !ck2_catalog_save(&catalog, selection))
@@ -695,6 +701,8 @@ static bool run_launcher(SDL_Window *window, SDL_Renderer *renderer, struct them
             hover = NONE;
         }
         if (action == PLAY) {
+            if (content_only)
+                break;
             if (!ck2_install_valid(*directory)) {
                 SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "CK2 files not found",
                     "Choose a valid Crusader Kings II installation in Settings.", window);
@@ -706,7 +714,7 @@ static bool run_launcher(SDL_Window *window, SDL_Renderer *renderer, struct them
                 break;
             }
         }
-        draw(renderer, theme, *directory, &catalog, &view, page, first, focus, hover, pointer);
+        draw(renderer, theme, *directory, &catalog, &view, page, first, focus, hover, pointer, content_only);
     }
     free(view.rows);
     ck2_catalog_free(&catalog);
@@ -719,7 +727,9 @@ int main(int argc, char **argv)
         puts("Usage: OpenCK2Launcher [--assets CK2_INSTALL_DIRECTORY]");
         return EXIT_SUCCESS;
     }
-    if (argc != 1 && (argc != 3 || strcmp(argv[1], "--assets") != 0)) {
+    const bool content_only = argc == 4 && strcmp(argv[1], "--content-settings") == 0 &&
+                              strcmp(argv[2], "--assets") == 0;
+    if (!content_only && argc != 1 && (argc != 3 || strcmp(argv[1], "--assets") != 0)) {
         fputs("Usage: OpenCK2Launcher [--assets CK2_INSTALL_DIRECTORY]\n", stderr);
         return EXIT_FAILURE;
     }
@@ -737,7 +747,7 @@ int main(int argc, char **argv)
     SDL_free(prefs);
 
     char *directory = NULL;
-    const char *override = argc == 3 ? argv[2] : getenv("CK2_DIR");
+    const char *override = content_only ? argv[3] : argc == 3 ? argv[2] : getenv("CK2_DIR");
     if (override && *override) {
         directory = realpath(override, NULL);
         if (!ck2_install_valid(directory)) {
@@ -758,9 +768,13 @@ int main(int argc, char **argv)
     int status = EXIT_FAILURE;
     struct theme theme = {0};
     bool play = false;
-    SDL_Window *window = SDL_CreateWindow("OpenCK2",
+    SDL_Window *window = SDL_CreateWindow(content_only ? "OpenCK2 - Content Settings" : "OpenCK2",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH, HEIGHT,
-        SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+        SDL_WINDOW_HIDDEN | SDL_WINDOW_ALLOW_HIGHDPI);
+    if (window) {
+        SDL_SetWindowMinimumSize(window, WIDTH, HEIGHT);
+        SDL_SetWindowMaximumSize(window, WIDTH, HEIGHT);
+    }
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
     SDL_Renderer *renderer = window ? SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED) : NULL;
     if (window && !renderer)
@@ -771,11 +785,11 @@ int main(int argc, char **argv)
     } else {
         enum choice result = directory && load_theme(&theme, renderer, directory)
             ? SELECTED : REJECTED;
-        while (result == REJECTED)
+        while (result == REJECTED && !content_only)
             result = choose_install(window, renderer, &theme, &directory, settings);
         if (result == SELECTED)
-            play = run_launcher(window, renderer, &theme, &directory, settings, selection, game);
-        if (result != CHOOSER_ERROR)
+            play = run_launcher(window, renderer, &theme, &directory, settings, selection, game, content_only);
+        if (result == SELECTED || result == CANCELLED)
             status = EXIT_SUCCESS;
     }
 

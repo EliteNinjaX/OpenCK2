@@ -52,11 +52,16 @@ Expected output is `holder=5660 effective=1066.1.1` (Morcar). At that cutoff, 2,
 ## Main menu milestone
 
 **Done.** The native C executable reaches a standalone main menu using the
-local CK2 install's art, bitmap font, and credits. It uses a static terrain
-backdrop. Options, Credits, and Quit work, while gameplay entry points remain
+local CK2 install's art, bitmap font, and credits. The map now uses a
+[perspective terrain renderer](MAP-RENDERING.md) based on the local assets. Options, Credits, and Quit work, while gameplay entry points remain
 disabled. See the [build instructions](README.md).
 
 ## Stage 3 — Build a headless simulation
+
+**Started.** Single Player runs a small York scenario with a daily clock,
+province selection, monthly income, and holding upgrades. The scenario uses
+local map data and prototype economy rules. Its calendar and treasury tests
+run with `make check-campaign`.
 
 Implement the date loop, stable IDs, characters, titles, and a small succession scenario in C. Advance one day at a time and compare each resulting state against the original under fixed inputs. Use REA for specific questions such as tick ordering and succession tie-breaking when observations leave multiple explanations.
 

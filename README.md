@@ -7,7 +7,7 @@ your local CK2 installation.
 ## OpenCK2Launcher
 
 From the repository root, build with GNU Make, a C17 compiler, pkg-config,
-and the SDL2, SDL2_image, and SDL2_mixer development packages. The graphical
+and the SDL2, SDL2_image, SDL2_mixer, and zlib development packages. The graphical
 folder picker uses Zenity.
 
 ```sh
@@ -34,18 +34,22 @@ for app 203770. Use `--assets PATH` or `CK2_DIR` for a one-run override.
 `--assets` path. Use Tab or Shift+Tab to focus buttons, Enter to activate
 them, and Escape to go back or quit. Scroll the content lists with the wheel,
 arrow keys, or scrollbar. Check a row to change its saved selection. The
-checkbox beside Mods controls both lists. A dash indicates mixed selections,
-and clicking it enables everything.
+checkbox beside Mods applies to the current tab. A dash indicates a mix of
+enabled and disabled entries in that tab. The launcher window is fixed at
+1000 × 600.
 
-Selections are saved separately in `content-selection.txt` in the launcher
-preferences directory. OpenCK2 does not mount DLC archives or mods yet.
-Use the original launcher to apply content to the original game or continue
-a save.
+Selections are saved in `content-selection.txt` in the launcher preferences
+directory. On Play, OpenCK2 mounts enabled local DLC ZIPs and mod directories
+or ZIPs from their descriptors. Mods take precedence over DLC and base files.
+The mounts provide file overrides and `replace_path` for the game's implemented
+asset and data loaders. Content changes in the in-game editor apply on the
+next launch. CK2 script execution, arbitrary GUI layouts, and full
+conversion compatibility remain incomplete.
 
 ## Native main menu
 
 Build from the repository root with GNU Make, a C17 compiler, pkg-config,
-SDL2, SDL2_image, and SDL2_mixer development libraries. The executable uses the assets
+SDL2, SDL2_image, SDL2_mixer, and zlib development libraries. The executable uses the assets
 from your existing CK2 installation at runtime.
 
 ```sh
@@ -58,14 +62,52 @@ The default asset directory is
 Steam library, pass its game directory with `--assets PATH` or set `CK2_DIR`.
 
 The menu uses the installed terrain colormap, title and panel sprites,
-Garamond bitmap font, and credits file. Options toggles fullscreen for the
-current session and can mute or resume the looping CK2 main theme. Credits scroll with the wheel, arrow keys or Page Up and
-Page Down. Use the mouse or arrows and Enter to navigate. Escape goes back
-or exits from the main menu.
+Garamond bitmap font, and credits file. **Options** has Game, Video, Audio,
+and Controls tabs. Apply changes the windowed resolution, window mode, and
+theme volume for the current session. The [settings TODO](SETTINGS-TODO.md)
+tracks the remaining controls. Credits scroll with the wheel, arrow keys,
+or Page Up and Page Down. Escape goes back or exits from the main menu.
 
-The terrain is a static 2D crop. The original 3D camera and live banners
-remain pending, and Single Player and Multiplayer are disabled. The native
-executable starts directly at its main menu.
+The main menu shows expansion icons and a bottom-left OpenCK2 version plate.
+**Content Settings** opens the launcher’s content editor and refreshes the
+icons when it closes. It saves launcher selections without mounting DLC or
+mods. Manual, Paradox Plaza, Reddit, and GitHub open in the browser.
+
+## First playable scenario
+
+Choose **Single Player → New Game** to browse CK2's five starting eras.
+Select an era and click **Start Game** to open **Game Rules**, or choose
+**Custom Game Setup** to inspect the starting map first. Press **W** to
+switch between Realms and Terrain in the preview or campaign. Drag with
+the right or middle mouse button or use the arrow keys to pan. Scroll to
+zoom, or press **Home** to view the whole installed map. In Custom Game
+Setup, click a featured ruler or a realm to inspect the ruler's culture,
+religion, and dynasty. Menus and ruler selection play the installed CK2
+sound effects. **Options → Audio → Effect** controls their volume.
+The rules
+screen supports category filters, a local preset, and default reset.
+Its settings are available for configuration while their simulation effects
+are pending. **Continue** resumes the current prototype campaign until you
+quit OpenCK2. See the [starting-era notes](STARTING-ERAS.md) for the REA
+findings and installed data sources. Click land provinces to inspect them.
+The prototype goal is to upgrade your capital and build a treasury of
+100 gold. The 1066 start defaults to York when you leave the ruler unselected.
+
+- **Space** pauses or resumes the daily clock.
+- **Next Month** pauses and advances to the first of the next month, when
+  you collect income.
+- **Improve Holding** spends 25 gold and adds 2 gold to monthly income. The
+  prototype starts with 50 gold and earns 5 gold per month before upgrades.
+- **Main Menu** or **Escape** returns to the menu. Single Player resumes the
+  same campaign during the current session.
+
+The province shapes and names come from the local CK2 install. The economy
+is a prototype with fixed rules. Saving campaigns and multiplayer are pending.
+
+The menu and campaign render the installed CK2 terrain layers in perspective,
+including elevation, lighting, forests, rivers, and animated water. See the
+[map investigation](MAP-RENDERING.md) for the REA evidence and remaining
+differences.
 
 ## Steam reference launcher
 

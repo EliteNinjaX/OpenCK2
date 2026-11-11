@@ -134,21 +134,23 @@ static void collect(struct content_list *list, const char *directory, const char
 
         char *path = ck2_join_path(directory, entry->d_name);
         char *name = path ? descriptor_name(path) : NULL;
-        free(path);
-        if (!name)
+        if (!name) {
+            free(path);
             continue;
+        }
         char *descriptor = strdup(entry->d_name);
         struct content_entry *entries = descriptor
             ? realloc(list->entries, (list->count + 1) * sizeof *entries) : NULL;
         if (!entries) {
             free(name);
             free(descriptor);
+            free(path);
             break;
         }
         list->entries = entries;
         const bool dlc = strcmp(extension, ".dlc") == 0;
         list->entries[list->count++] = (struct content_entry){
-            .name = name, .descriptor = descriptor,
+            .name = name, .descriptor = descriptor, .source = path,
             .icon = dlc ? icon_for(descriptor) : -1,
             .category = dlc && icon_for(descriptor) >= 0 ? EXPANSION : OTHER_DLC,
             .enabled = dlc, .installed = true,
@@ -460,36 +462,29 @@ bool ck2_catalog_save(const struct content_catalog *catalog, const char *path)
     return saved;
 }
 
-void ck2_catalog_set_all(struct content_catalog *catalog, bool enabled)
+void ck2_content_set_all(struct content_list *list, bool enabled)
 {
-    struct content_list *lists[] = {&catalog->dlc, &catalog->mods};
-    for (size_t j = 0; j < 2; ++j) {
-        for (size_t i = 0; i < lists[j]->count; ++i)
-            if (lists[j]->entries[i].installed)
-                lists[j]->entries[i].enabled = enabled;
-    }
+    for (size_t i = 0; i < list->count; ++i)
+        if (list->entries[i].installed)
+            list->entries[i].enabled = enabled;
 }
 
-static bool has_state(const struct content_catalog *catalog, bool enabled)
+static bool has_state(const struct content_list *list, bool enabled)
 {
-    const struct content_list *lists[] = {&catalog->dlc, &catalog->mods};
-    for (size_t j = 0; j < 2; ++j) {
-        for (size_t i = 0; i < lists[j]->count; ++i) {
-            if (lists[j]->entries[i].installed && lists[j]->entries[i].enabled == enabled)
-                return true;
-        }
-    }
+    for (size_t i = 0; i < list->count; ++i)
+        if (list->entries[i].installed && list->entries[i].enabled == enabled)
+            return true;
     return false;
 }
 
-bool ck2_catalog_all_enabled(const struct content_catalog *catalog)
+bool ck2_content_all_enabled(const struct content_list *list)
 {
-    return has_state(catalog, true) && !has_state(catalog, false);
+    return has_state(list, true) && !has_state(list, false);
 }
 
-bool ck2_catalog_any_enabled(const struct content_catalog *catalog)
+bool ck2_content_any_enabled(const struct content_list *list)
 {
-    return has_state(catalog, true);
+    return has_state(list, true);
 }
 
 void ck2_catalog_free(struct content_catalog *catalog)
@@ -500,6 +495,7 @@ void ck2_catalog_free(struct content_catalog *catalog)
         for (size_t i = 0; i < list->count; ++i) {
             free(list->entries[i].name);
             free(list->entries[i].descriptor);
+            free(list->entries[i].source);
         }
         free(list->entries);
     }
