@@ -87,8 +87,8 @@ The York scenario's controls and goal remain specific to the temporary test.
 
 ## Ruler selection and sound
 
-Custom Game Setup shows featured rulers and resolves the independent ruler
-when you click a province. Dated character history supplies culture,
+Custom Game Setup shows featured rulers and resolves the county holder
+when you click a province. Shift-click opens the independent realm. Dated character history supplies culture,
 religion, and dynasty. A realm takes the ruler's dynasty name when the
 culture enables `dynasty_title_names` and the title permits it. This
 produces the Abbasid and Umayyad labels at the 769 start. Rulers with

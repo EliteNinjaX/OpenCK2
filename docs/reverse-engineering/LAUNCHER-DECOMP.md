@@ -22,7 +22,7 @@ REA reports a preferred image base of `0x140000000`. Addresses below are RVAs re
 | `0x81044c–0x810466` | Skips launcher setup at `0x810785` only when `[rbp+0x540]` is nonzero, the global byte at RVA `0x1666cf9` is zero, and `al` is zero. |
 | `0x81052f`, `0x8105d1` | Loads the `launcher/interface` string and passes it into the setup call at RVA `0xd76310`. |
 
-The recovered C is in [startup.c](src/launcher/startup.c). The token function accepts the internal token, so the tested external argument `-skiplauncher` and the compared internal string `skiplauncher` are different inputs. The two override names describe their effect at the branch. Their producers and the rest of command-line parsing remain outside this milestone. Both C functions model blocks within a larger original function, so there is no standalone original function to byte-match against them.
+The recovered C is in [startup.c](../../src/launcher/startup.c). The token function accepts the internal token, so the tested external argument `-skiplauncher` and the compared internal string `skiplauncher` are different inputs. The two override names describe their effect at the branch. Their producers and the rest of command-line parsing remain outside this milestone. Both C functions model blocks within a larger original function, so there is no standalone original function to byte-match against them.
 
 From the repository root:
 
@@ -52,7 +52,7 @@ during the run, so file-open events alone do not establish which save loaded.
 The selected-filename handoff is established by the branch and call trace.
 The isolated run did not verify arrival in a loaded campaign.
 
-[lifecycle.c](src/launcher/lifecycle.c) models the action dispatch and timestamp
+[lifecycle.c](../../src/launcher/lifecycle.c) models the action dispatch and timestamp
 selection after the game's eligibility checks.
 
 ## Milestone 3 evidence
@@ -96,7 +96,7 @@ button click:
 | Play, Holy Fury on and probe off | Opened | Opened | No open observed |
 
 After the Play test, both settings blocks were absent, consistent with the
-serializer skipping empty lists. [content.c](src/launcher/content.c) models
+serializer skipping empty lists. [content.c](../../src/launcher/content.c) models
 selection restoration for already discovered, selectable descriptors. Ownership
 checks, Workshop discovery, the general settings parser, and the full mount
 ordering remain outside this C model.

@@ -1,8 +1,16 @@
 # OpenCK2
 
-A Linux C reimplementation project for Crusader Kings II. The current
-build includes a native main menu and a launcher. It reads game assets from
-your local CK2 installation.
+OpenCK2 reconstructs the original Crusader Kings II engine in C17. Its
+fidelity target is the experience of a native Windows, Linux, and macOS
+port of the original engine. The current build runs on Linux and reads
+assets and data from your local CK2 installation.
+
+Start with the [documentation index](docs/README.md) and the
+[roadmap](ROADMAP.md) for project status and milestones.
+[AGENTS.md](AGENTS.md) covers the shared workflow for humans, local AI,
+Codex, and Claude Code. The [reverse-engineering knowledge base](docs/reverse-engineering/README.md)
+indexes prior findings and gives contributors with or without C experience
+a starting point.
 
 ## OpenCK2Launcher
 
@@ -64,14 +72,13 @@ Steam library, pass its game directory with `--assets PATH` or set `CK2_DIR`.
 The menu uses the installed terrain colormap, title and panel sprites,
 Garamond bitmap font, and credits file. **Options** has Game, Video, Audio,
 and Controls tabs. Apply changes the windowed resolution, window mode, and
-theme volume for the current session. The [settings TODO](SETTINGS-TODO.md)
+music and effect volume for the current session. The [settings TODO](docs/SETTINGS-TODO.md)
 tracks the remaining controls. Credits scroll with the wheel, arrow keys,
 or Page Up and Page Down. Escape goes back or exits from the main menu.
 
 The main menu shows expansion icons and a bottom-left OpenCK2 version plate.
 **Content Settings** opens the launcher’s content editor and refreshes the
-icons when it closes. It saves launcher selections without mounting DLC or
-mods. Manual, Paradox Plaza, Reddit, and GitHub open in the browser.
+icons when it closes. Saved DLC and mod changes apply on the next launch. Manual, Paradox Plaza, Reddit, and GitHub open in the browser.
 
 ## First playable scenario
 
@@ -81,14 +88,15 @@ Select an era and click **Start Game** to open **Game Rules**, or choose
 switch between Realms and Terrain in the preview or campaign. Drag with
 the right or middle mouse button or use the arrow keys to pan. Scroll to
 zoom, or press **Home** to view the whole installed map. In Custom Game
-Setup, click a featured ruler or a realm to inspect the ruler's culture,
-religion, and dynasty. Menus and ruler selection play the installed CK2
+Setup, click a featured ruler or county to inspect the ruler's culture,
+religion, and dynasty. Alt-click opens the county holder's primary title,
+and Shift-click opens the independent realm. The right panel supports
+liege, vassal, and holding selection. Menus and ruler selection play the installed CK2
 sound effects. **Options → Audio → Effect** controls their volume.
-The rules
-screen supports category filters, a local preset, and default reset.
+The rules screen supports category filters, a local preset, and default reset.
 Its settings are available for configuration while their simulation effects
 are pending. **Continue** resumes the current prototype campaign until you
-quit OpenCK2. See the [starting-era notes](STARTING-ERAS.md) for the REA
+quit OpenCK2. See the [starting-era notes](docs/reverse-engineering/STARTING-ERAS.md) for the REA
 findings and installed data sources. Click land provinces to inspect them.
 The prototype goal is to upgrade your capital and build a treasury of
 100 gold. The 1066 start defaults to York when you leave the ruler unselected.
@@ -106,7 +114,7 @@ is a prototype with fixed rules. Saving campaigns and multiplayer are pending.
 
 The menu and campaign render the installed CK2 terrain layers in perspective,
 including elevation, lighting, forests, rivers, and animated water. See the
-[map investigation](MAP-RENDERING.md) for the REA evidence and remaining
+[map investigation](docs/reverse-engineering/MAP-RENDERING.md) for the REA evidence and remaining
 differences.
 
 ## Steam reference launcher
@@ -122,7 +130,7 @@ The launcher hands app ID 203770 to Steam. Steam locates the local game and appl
 
 Use `./bin/ck2-launcher --help` for usage.
 
-The launcher entry point lives in `src/launcher/main.c`, with its build recipe in `Makefile`. This follows the separation of source and build tooling in [fnv_decomp](https://github.com/momusdigital/fnv_decomp/tree/91e1b6e8d8bb0f9a33e8cf88e77268757449e0a6). The [title-history tool](title-history.c) remains a standalone C program. The [roadmap](ROADMAP.md) tracks the wider CK2 project.
+The launcher entry point lives in `src/launcher/main.c`, with its build recipe in `Makefile`. This follows the separation of source and build tooling in [fnv_decomp](https://github.com/momusdigital/fnv_decomp/tree/91e1b6e8d8bb0f9a33e8cf88e77268757449e0a6). The [title-history tool](tools/title-history.c) remains a standalone C program. The [roadmap](ROADMAP.md) tracks the wider CK2 project.
 
 ## Original launcher
 
@@ -141,4 +149,11 @@ The local layout is defined in `launcher/interface/main.gui` and
 `launcher/interface/main.gfx`, with text in `localisation/z_launcher.csv`.
 The layout defines a 1000 by 600 design surface.
 
-See [launcher decompilation milestones and evidence](LAUNCHER-DECOMP.md) for the recovered startup, lifecycle, and content-selection logic.
+See [launcher decompilation milestones and evidence](docs/reverse-engineering/LAUNCHER-DECOMP.md) for the recovered startup, lifecycle, and content-selection logic.
+
+## License
+
+OpenCK2 project code is licensed under the GNU General Public License,
+version 3. See [LICENSE](LICENSE) (`GPL-3.0-only`). CK2 game files and other
+third-party materials retain their respective licenses. OpenCK2 reads the
+player's installed CK2 files at runtime.

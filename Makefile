@@ -81,3 +81,12 @@ $(CAMPAIGN_TEST): $(CAMPAIGN_TEST_SOURCES) src/game/campaign.h src/game/map_view
 	$(CC) $(CPPFLAGS) $(CFLAGS) -UNDEBUG -std=c17 -Wall -Wextra -Wpedantic -Isrc/game \
 		$$(pkg-config --cflags sdl2) $(LDFLAGS) -o "$@" $(CAMPAIGN_TEST_SOURCES) \
 		$$(pkg-config --libs sdl2 zlib) $(LDLIBS)
+
+TITLE_HISTORY := $(BUILD_DIR)/title-history
+
+.PHONY: title-history
+title-history: $(TITLE_HISTORY)
+
+$(TITLE_HISTORY): tools/title-history.c Makefile
+	mkdir -p "$(@D)"
+	$(CC) $(CPPFLAGS) $(CFLAGS) -std=c17 -Wall -Wextra -Wpedantic $(LDFLAGS) -o "$@" "$<" $(LDLIBS)
