@@ -12,6 +12,7 @@ struct era_ruler {
     unsigned id, age, title_holder;
     int portrait_year;
     struct campaign_date birth;
+    bool female, age_known;
     SDL_Texture *portrait, *shield;
 };
 
@@ -24,7 +25,8 @@ struct starting_era {
 };
 
 struct era_menu {
-    struct starting_era eras[ERA_COUNT];
+    struct starting_era *eras;
+    int cards[ERA_COUNT], card_count;
     SDL_Texture *background, *info, *banner, *frame, *selected_frame, *ornament, *shattered, *random;
     SDL_Texture *shield_frame, *pagan_shield_frame;
     SDL_Texture *button, *button_hover, *small_font;
@@ -33,10 +35,12 @@ struct era_menu {
 };
 
 int era_menu_load(struct era_menu *, SDL_Renderer *, const char *);
+SDL_Texture *era_title_shield(SDL_Renderer *, const char *root, const char *title, const char *religion);
 void era_menu_free(struct era_menu *);
 void era_draw_portrait(const struct era_menu *, SDL_Renderer *, SDL_Texture *, char rank, SDL_Rect);
 void era_menu_draw(const struct era_menu *, SDL_Renderer *, const struct menu_assets *,
                    settings_text, SDL_Point);
+void era_menu_step_card(struct era_menu *, int delta);
 bool era_menu_click(struct era_menu *, SDL_Point);
 bool era_menu_deferred(const struct era_menu *, SDL_Point);
 bool era_menu_can_start(const struct era_menu *);

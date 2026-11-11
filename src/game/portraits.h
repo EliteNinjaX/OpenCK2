@@ -8,7 +8,7 @@ struct portrait_source {
     char **documents;
     struct portrait_definition *definitions;
     size_t document_count, culture_first, definition_count, definition_capacity;
-    int early_before, late_after;
+    int early_before, late_after, adult_male_age, adult_female_age, mid_age, old_age;
 };
 
 void portraits_open(struct portrait_source *, const char *);

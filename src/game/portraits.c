@@ -131,6 +131,10 @@ void portraits_open(struct portrait_source *source, const char *root)
     char *defines = load_data(root, "common/defines.lua");
     source->early_before = year_setting(defines, "EARLY_PORTRAIT_AND_UNIT_BEFORE_YEAR", 950);
     source->late_after = year_setting(defines, "LATE_PORTRAIT_AND_UNIT_AFTER_YEAR", 1200);
+    source->adult_male_age = year_setting(defines, "PORTRAIT_ADULT_MALE_AGE_THRESHOLD", 16);
+    source->adult_female_age = year_setting(defines, "PORTRAIT_ADULT_FEMALE_AGE_THRESHOLD", 16);
+    source->mid_age = year_setting(defines, "PORTRAIT_MID_AGE_THRESHOLD", 30);
+    source->old_age = year_setting(defines, "PORTRAIT_OLD_AGE_THRESHOLD", 50);
     SDL_free(defines);
 }
 
@@ -258,6 +262,28 @@ static SDL_Surface *load_layer(const char *root, char *relative)
     return surface;
 }
 
+static bool sprite_path(const char *sprite, char *path, size_t capacity)
+{
+    struct token asset = field(sprite, "texturefile");
+    if (!asset.size)
+        asset = field(sprite, "textureFile");
+    size_t len = 0;
+    for (size_t i = 0; i < asset.size; ++i) {
+        if (len + 1 >= capacity)
+            return false;
+        if (asset.start[i] == '\\' || asset.start[i] == '/') {
+            if (!len || path[len - 1] != '/')
+                path[len++] = '/';
+        } else {
+            path[len++] = asset.start[i];
+        }
+    }
+    path[len] = 0;
+    if (!len || path[0] == '/' || strstr(path, ".."))
+        return false;
+    return true;
+}
+
 static bool draw_layer(const struct portrait_source *source, SDL_Surface *portrait,
                        const char *root, const struct era_ruler *ruler,
                        char *entry, int hair[3][3], int eye[3])
@@ -270,20 +296,7 @@ static bool draw_layer(const struct portrait_source *source, SDL_Surface *portra
     if (!sprite)
         return false;
     char path[200];
-    struct token asset = field(sprite, "texturefile");
-    if (!asset.size)
-        asset = field(sprite, "textureFile");
-    size_t len = 0;
-    for (size_t i = 0; i < asset.size && len + 1 < sizeof path; ++i) {
-        if (asset.start[i] == '\\' || asset.start[i] == '/') {
-            if (!len || path[len - 1] != '/')
-                path[len++] = '/';
-        } else {
-            path[len++] = asset.start[i];
-        }
-    }
-    path[len] = 0;
-    if (!len || path[0] == '/' || strstr(path, ".."))
+    if (!sprite_path(sprite, path, sizeof path))
         return false;
     const unsigned slot = (unsigned)strtoul(gene + 1, NULL, 10);
     if (gene[0] == 'p' && slot > 5 && slot >= strlen(ruler->properties))
@@ -306,14 +319,52 @@ static bool draw_layer(const struct portrait_source *source, SDL_Surface *portra
     SDL_SetSurfaceBlendMode(layer, SDL_BLENDMODE_BLEND);
     SDL_BlitSurface(layer, &part, portrait, &target);
     SDL_FreeSurface(layer);
-    return strstr(entry, "_male_base") != NULL;
+    return strstr(entry, ruler->female ? "_female_base" : "_male_base") != NULL;
+}
+
+/* Stable fallback for historical records without authored DNA.
+   Vanilla's initialization algorithm has not been recovered. */
+static void fallback_dna(struct era_ruler *ruler)
+{
+    Uint32 value = ruler->id ^ 0x9e3779b9u;
+    for (size_t i = 0; i < 11; ++i) {
+        value = value * 1664525u + 1013904223u;
+        ruler->dna[i] = (char)('a' + (value >> 16) % 26);
+    }
+    ruler->dna[11] = 0;
+}
+
+static SDL_Texture *child_portrait(const struct portrait_source *source, SDL_Renderer *renderer,
+                                  const char *root, char groups[][64], size_t count, const char *sex)
+{
+    for (size_t i = 0; i < count; ++i) {
+        char name[112], path[200];
+        SDL_snprintf(name, sizeof name, "PORTRAIT_%s_child_%s", groups[i], sex);
+        const char *sprite = definition(source, name, false);
+        if (!sprite || !sprite_path(sprite, path, sizeof path))
+            continue;
+        SDL_Surface *art = load_layer(root, path);
+        if (!art)
+            continue;
+        SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, art);
+        SDL_FreeSurface(art);
+        if (texture)
+            return texture;
+    }
+    return NULL;
 }
 
 SDL_Texture *portrait_render(const struct portrait_source *source, SDL_Renderer *renderer,
                              const char *root, const struct era_ruler *ruler)
 {
-    if (!ruler->dna[0])
+    if (!ruler->dna[0] && !ruler->id)
         return NULL;
+    struct era_ruler generated;
+    if (!ruler->dna[0]) {
+        generated = *ruler;
+        fallback_dna(&generated);
+        ruler = &generated;
+    }
     char groups[16][64];
     size_t count = culture_groups(source, ruler->culture, groups, SDL_arraysize(groups) - 2);
     if (!strcmp(ruler->religion, "sunni") || !strcmp(ruler->religion, "shiite"))
@@ -321,7 +372,15 @@ SDL_Texture *portrait_render(const struct portrait_source *source, SDL_Renderer 
     SDL_strlcpy(groups[count++], "westerngfx", sizeof groups[0]);
     const char *period = ruler->portrait_year > 0 && ruler->portrait_year < source->early_before ? "_early"
         : ruler->portrait_year > source->late_after ? "_late" : "";
-    const char *age = ruler->age < 30 ? "" : ruler->age < 50 ? "1" : "2";
+    const char *sex = ruler->female ? "female" : "male";
+    const unsigned adult_age = (unsigned)(ruler->female ? source->adult_female_age : source->adult_male_age);
+    if ((ruler->age_known || ruler->age) && ruler->age < adult_age) {
+        SDL_Texture *child = child_portrait(source, renderer, root, groups, count, sex);
+        if (child)
+            return child;
+    }
+    const char *age = ruler->age < (unsigned)source->mid_age ? ""
+        : ruler->age < (unsigned)source->old_age ? "1" : "2";
     SDL_Surface *portrait = SDL_CreateRGBSurfaceWithFormat(0, 152, 152, 32, SDL_PIXELFORMAT_BGRA32);
     if (!portrait)
         return NULL;
@@ -329,10 +388,10 @@ SDL_Texture *portrait_render(const struct portrait_source *source, SDL_Renderer 
     for (size_t attempt = 0; attempt < count && !base; ++attempt) {
         SDL_FillRect(portrait, NULL, 0);
         char name[112];
-        SDL_snprintf(name, sizeof name, "PORTRAIT_%s_male%s%s", groups[attempt], period, age);
+        SDL_snprintf(name, sizeof name, "PORTRAIT_%s_%s%s%s", groups[attempt], sex, period, age);
         const char *def = definition(source, name, true);
         if (!def && *period) {
-            SDL_snprintf(name, sizeof name, "PORTRAIT_%s_male%s", groups[attempt], age);
+            SDL_snprintf(name, sizeof name, "PORTRAIT_%s_%s%s", groups[attempt], sex, age);
             def = definition(source, name, true);
         }
         const char *layer = def;

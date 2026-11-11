@@ -180,32 +180,13 @@ static int *province_titles(const char *root, const struct province_map *map,
     int *index = malloc(map->count * sizeof *index);
     if (!index)
         return NULL;
-    for (size_t i = 0; i < map->count; ++i)
-        index[i] = -1;
-    struct ck2_asset_files files = ck2_list_assets(root, "history/provinces");
-    if (!files.count) {
-        free(index);
-        SDL_SetError("Could not read CK2 province history");
-        return NULL;
+    for (size_t i = 0; i < map->count; ++i) {
+        char *data = province_history_read(&map->provinces[i], root);
+        char key[72];
+        copy_token(key, sizeof key, data ? field(data, "title") : (struct token){0});
+        index[i] = title_index(titles, count, key);
+        SDL_free(data);
     }
-    for (size_t i = 0; i < files.count; ++i) {
-        const char *name = files.names[i];
-        char *end;
-        const unsigned id = (unsigned)strtoul(name, &end, 10);
-        if (end == name || !id || *end != ' ')
-            continue;
-        const struct province *province = province_by_id(map, id);
-        if (!province || !province->land)
-            continue;
-        char *data = load_from_directory(root, "history/provinces", name);
-        if (data) {
-            char key[72];
-            copy_token(key, sizeof key, field(data, "title"));
-            index[province - map->provinces] = title_index(titles, count, key);
-            SDL_free(data);
-        }
-    }
-    ck2_free_asset_files(&files);
     return index;
 }
 

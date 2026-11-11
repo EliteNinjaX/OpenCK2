@@ -28,6 +28,7 @@ struct province {
     Uint32 color;
     unsigned id;
     char name[128];
+    char *history_path;
     bool land;
 };
 
@@ -39,6 +40,7 @@ struct province_map {
 
 int province_map_load(struct province_map *map, const char *root);
 void province_map_free(struct province_map *map);
+char *province_history_read(const struct province *, const char *root);
 Uint32 province_map_color(const struct province_map *, int, int);
 const struct province *province_at(const struct province_map *map, int x, int y);
 const struct province *province_by_id(const struct province_map *map, unsigned id);

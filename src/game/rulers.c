@@ -25,7 +25,13 @@ static void read_character(struct ruler_profile *r, const char *block, int cutof
     copy_token(r->culture_key, sizeof r->culture_key, field(block, "culture"));
     copy_token(r->religion_key, sizeof r->religion_key, field(block, "religion"));
     copy_token(r->dna, sizeof r->dna, field(block, "dna"));
-    copy_token(r->properties, sizeof r->properties, field(block, "properties"));
+    struct token properties = field(block, "prp");
+    if (!properties.size)
+        properties = field(block, "properties");
+    copy_token(r->properties, sizeof r->properties, properties);
+    r->female = is(field(block, "female"), "yes");
+    r->age = 0;
+    r->age_known = false;
     r->dynasty_id = number(field(block, "dynasty"));
     int culture = 0, religion = 0, dynasty = 0;
     for (struct token key; (key = token(&block)).size && !is(key, "}");) {
@@ -37,6 +43,7 @@ static void read_character(struct ruler_profile *r, const char *block, int cutof
         if (when && when <= cutoff) {
             if (field(block, "birth").size) {
                 const int year = cutoff / 10000 - when / 10000;
+                r->age_known = true;
                 r->age = (unsigned)SDL_max(0, year - (cutoff % 10000 < when % 10000));
             }
             struct token t = field(block, "culture");

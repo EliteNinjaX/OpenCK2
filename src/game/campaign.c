@@ -113,23 +113,73 @@ static int load_definitions(struct province_map *map, const char *root)
     return status;
 }
 
-static int mark_land_provinces(struct province_map *map, const char *root)
+static bool canonical_history_name(const char *file, const struct province *province)
+{
+    const char *separator = strstr(file, " - ");
+    if (!separator)
+        return false;
+    const char *name = separator + 3;
+    const size_t length = strlen(province->name);
+    return strlen(name) == length + 4 && !memcmp(name, province->name, length) &&
+           !strcmp(name + length, ".txt");
+}
+
+static int index_province_history(struct province_map *map, const char *root)
 {
     struct ck2_asset_files files = ck2_list_assets(root, "history/provinces");
     if (!files.count)
         return SDL_SetError("Could not open history/provinces");
 
-    for (size_t file = 0; file < files.count; ++file) {
-        unsigned id;
-        if (sscanf(files.names[file], "%u -", &id) != 1)
+    size_t *priorities = calloc(map->count, sizeof *priorities);
+    int status = priorities ? 0 : SDL_OutOfMemory();
+    for (size_t file = 0; file < files.count && status == 0; ++file) {
+        const char *name = files.names[file];
+        char *end;
+        const unsigned long id = strtoul(name, &end, 10);
+        const size_t length = strlen(name);
+        if (end == name || *end != ' ' || length < 4 || strcmp(name + length - 4, ".txt"))
             continue;
         for (size_t i = 0; i < map->count; ++i) {
-            if (map->provinces[i].id == id)
-                map->provinces[i].land = true;
+            struct province *province = &map->provinces[i];
+            if (province->id != id)
+                continue;
+            char *relative = ck2_join_path("history/provinces", name);
+            if (!relative) {
+                status = SDL_OutOfMemory();
+                break;
+            }
+            size_t priority;
+            char *path = ck2_asset_path_with_priority(root, relative, &priority);
+            const char *current = province->history_path ? strrchr(province->history_path, '/') + 1 : NULL;
+            /* Duplicate IDs are shipped with old names. Within a content
+               layer, prefer the name declared by the active map. */
+            const bool canonical = canonical_history_name(name, province);
+            const bool current_canonical = current && canonical_history_name(current, province);
+            if (path && (!current || priority > priorities[i] ||
+                         (priority == priorities[i] && canonical && !current_canonical))) {
+                free(province->history_path);
+                province->history_path = relative;
+                province->land = true;
+                priorities[i] = priority;
+            } else {
+                free(relative);
+            }
+            free(path);
         }
     }
+    free(priorities);
     ck2_free_asset_files(&files);
-    return 0;
+    return status;
+}
+
+char *province_history_read(const struct province *province, const char *root)
+{
+    if (!province || !province->history_path)
+        return NULL;
+    char *path = ck2_asset_path(root, province->history_path);
+    char *data = path ? SDL_LoadFile(path, NULL) : NULL;
+    free(path);
+    return data;
 }
 
 int province_map_load(struct province_map *map, const char *root)
@@ -143,7 +193,7 @@ int province_map_load(struct province_map *map, const char *root)
         return -1;
     map->pixels = SDL_ConvertSurfaceFormat(bmp, SDL_PIXELFORMAT_ARGB8888, 0);
     SDL_FreeSurface(bmp);
-    if (!map->pixels || load_definitions(map, root) < 0 || mark_land_provinces(map, root) < 0)
+    if (!map->pixels || load_definitions(map, root) < 0 || index_province_history(map, root) < 0)
         return -1;
 
     qsort(map->provinces, map->count, sizeof *map->provinces, compare_color);
@@ -153,6 +203,8 @@ int province_map_load(struct province_map *map, const char *root)
 void province_map_free(struct province_map *map)
 {
     SDL_FreeSurface(map->pixels);
+    for (size_t i = 0; i < map->count; ++i)
+        free(map->provinces[i].history_path);
     free(map->provinces);
     *map = (struct province_map){0};
 }

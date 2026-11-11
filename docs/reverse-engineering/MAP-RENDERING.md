@@ -174,3 +174,28 @@ Next steps for interface compatibility:
 3. Extend interface coverage beyond models. Audit the existing sprite,
    portrait, font, and GUI loaders against shipped declarations and
    implement missing widget layout, interaction, and engine bindings.
+
+## Current map checkpoint
+
+The main menu and setup/campaign views consume local CK2 terrain,
+topology, normal, river, tree, water and reflection assets. Setup
+uses the same projected samples for province picking, selection
+outlines and the Realms overlay. Historical titles and holders drive
+realm colors and labels. Iceland's height-based shoreline fix and
+the original 3D wooden frame are in place. The loader decoded
+static geometry for 370 base model names. The frame is the model
+verified in the running map.
+
+The history resolver now chooses one province history file for both
+Realms and holdings. The [Călărași audit](PROVINCE-HOLDINGS.md) records
+the Coconi fix and the scan of 1,740 provinces at all 11 bookmarks.
+The [portrait and ruler panel notes](PORTRAITS-AND-RULER-PANEL.md)
+record the authored portrait fix, generated fallback, and paused
+vanilla portrait parity work.
+
+Remaining map parity includes native GPU lighting and filtering,
+water refraction, full river and strait geometry, the exact frame
+transform and materials, curved realm labels, and live realm updates.
+The software map still renders to a fixed logical raster. Match the
+reference camera, zoom, mode and resolution before evaluating further
+changes.

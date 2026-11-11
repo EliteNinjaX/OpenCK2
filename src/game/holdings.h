@@ -17,6 +17,7 @@ struct county_holdings {
     char capital[72];
     int capital_date, capacity_date;
 };
-void holdings_load(struct county_holdings *, const char *, unsigned, struct campaign_date);
+void holdings_read(struct county_holdings *, const char *, struct campaign_date);
+void holdings_load(struct county_holdings *, const char *, const struct province *, struct campaign_date);
 
 #endif

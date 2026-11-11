@@ -18,3 +18,15 @@ CK2="${CK2_DIR:-$HOME/.steam/steam/steamapps/common/Crusader Kings II}"
 The pinned reference reports `holder=5660 effective=1066.1.1`. This probe
 reads a single file. For runtime history, DLC and mod overlays, title-name
 resets, and hierarchy selection, see [the starting-era notes](../docs/reverse-engineering/STARTING-ERAS.md).
+
+## Holding audit
+
+`make holding-audit` builds a probe that lists the history file and
+active holdings for every mapped province at a requested date.
+
+```sh
+./bin/holding-audit "$CK2" 769.1.1
+```
+
+The [province and holding audit](../docs/reverse-engineering/PROVINCE-HOLDINGS.md)
+describes the columns, map-wide comparison, and duplicate-file fix.

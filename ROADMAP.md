@@ -26,6 +26,8 @@ Track **architecture and recovered behavior**, **historical state**,
 Determinism, save interoperability, and mod support are core engineering
 milestones. Exact executable byte matching is on hold.
 
+See the [loose-file compatibility audit](docs/LOOSE-FILES.md) for the current reader coverage, known exceptions, and the next GUI, map, and script milestones.
+
 Start with [AGENTS.md](AGENTS.md) for shared instructions and the
 [reverse-engineering knowledge base](docs/reverse-engineering/README.md)
 for evidence and starting points for humans and AI tools.

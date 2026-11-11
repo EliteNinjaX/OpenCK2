@@ -1,8 +1,6 @@
 #include "holdings.h"
 #include "ck2_script.h"
-#include "../open_launcher/asset_paths.h"
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 static enum holding_type type_for(struct token value)
@@ -55,22 +53,9 @@ static void update(struct county_holdings *county, struct token key, struct toke
     }
 }
 
-void holdings_load(struct county_holdings *county, const char *root, unsigned province,
-                    struct campaign_date date)
+void holdings_read(struct county_holdings *county, const char *data, struct campaign_date date)
 {
     *county = (struct county_holdings){0};
-    if (!province)
-        return;
-    struct ck2_asset_files files = ck2_list_assets(root, "history/provinces");
-    char *data = NULL;
-    for (size_t i = 0; i < files.count; ++i) {
-        char *end;
-        if (strtoul(files.names[i], &end, 10) == province && *end == ' ') {
-            SDL_free(data);
-            data = load_from_directory(root, "history/provinces", files.names[i]);
-        }
-    }
-    ck2_free_asset_files(&files);
     const int cutoff = date.year * 10000 + date.month * 100 + date.day;
     for (const char *p = data; p && *p;) {
         struct token key = token(&p);
@@ -101,7 +86,6 @@ void holdings_load(struct county_holdings *county, const char *root, unsigned pr
         }
         skip_block(&p);
     }
-    SDL_free(data);
     size_t count = 0;
     for (size_t i = 0; i < county->count; ++i)
         if (county->slots[i].type)
@@ -116,6 +100,15 @@ void holdings_load(struct county_holdings *county, const char *root, unsigned pr
         break;
     }
     county->capacity = SDL_max(count, county->capacity);
+}
+
+void holdings_load(struct county_holdings *county, const char *root, const struct province *province,
+                    struct campaign_date date)
+{
+    char *data = province_history_read(province, root);
+    holdings_read(county, data, date);
+    SDL_free(data);
+    const size_t count = county->count;
     struct ck2_translation terms[HOLDING_LIMIT];
     for (size_t i = 0; i < count; ++i) {
         struct holding *slot = &county->slots[i];

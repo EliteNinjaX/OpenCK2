@@ -2,6 +2,7 @@
 #include "era.h"
 #include "ck2_script.h"
 #include "portraits.h"
+#include "rulers.h"
 #include "../open_launcher/install.h"
 
 #include <SDL_image.h>
@@ -15,11 +16,14 @@ enum { PANEL_X = 276, PANEL_Y = 84 };
 static void load_ruler(struct era_ruler *ruler, const char *p)
 {
     ruler->id = number(field(p, "id"));
-    ruler->age = number(field(p, "age"));
+    const struct token age = field(p, "age");
+    ruler->age = number(age);
+    ruler->age_known = age.size != 0;
     copy_token(ruler->name_key, sizeof ruler->name_key, field(p, "name"));
     copy_token(ruler->title_name_key, sizeof ruler->title_name_key, field(p, "title_name"));
     copy_token(ruler->title, sizeof ruler->title, field(p, "title"));
     if (is(find(&p, "character"), "{")) {
+        ruler->female = is(field(p, "female"), "yes");
         copy_token(ruler->dna, sizeof ruler->dna, field(p, "dna"));
         copy_token(ruler->properties, sizeof ruler->properties, field(p, "properties"));
         copy_token(ruler->culture, sizeof ruler->culture, field(p, "culture"));
@@ -33,20 +37,28 @@ static int load_bookmarks(struct era_menu *menu, const char *root)
     if (!data)
         return -1;
     const char *p = data;
-    while (menu->count < ERA_COUNT && token(&p).size && is(token(&p), "=") && is(token(&p), "{")) {
+    while (token(&p).size && is(token(&p), "=") && is(token(&p), "{")) {
         const char *bookmark = p;
         skip_block(&p);
-        if (!is(field(bookmark, "era"), "yes"))
-            continue;
+        const bool card = is(field(bookmark, "era"), "yes") && menu->card_count < ERA_COUNT;
+        struct starting_era *entries = realloc(menu->eras, ((size_t)menu->count + 1) * sizeof *entries);
+        if (!entries) {
+            SDL_free(data);
+            return SDL_OutOfMemory();
+        }
+        menu->eras = entries;
+        if (card)
+            menu->cards[menu->card_count++] = menu->count;
         struct starting_era *era = &menu->eras[menu->count++];
+        *era = (struct starting_era){0};
         copy_token(era->name_key, sizeof era->name_key, field(bookmark, "name"));
         copy_token(era->description_key, sizeof era->description_key, field(bookmark, "desc"));
         char date[32], picture[64];
         copy_token(date, sizeof date, field(bookmark, "date"));
         copy_token(picture, sizeof picture, field(bookmark, "picture"));
         if (sscanf(date, "%d.%d.%d", &era->date.year, &era->date.month, &era->date.day) != 3 ||
-            sscanf(picture, "GFX_pick_era_image_%d", &era->image) != 1 ||
-            era->image < 1 || era->image > 6) {
+            (card && (sscanf(picture, "GFX_pick_era_image_%d", &era->image) != 1 ||
+                      era->image < 1 || era->image > 6))) {
             SDL_free(data);
             return SDL_SetError("Invalid CK2 starting-era bookmark");
         }
@@ -58,7 +70,7 @@ static int load_bookmarks(struct era_menu *menu, const char *root)
         }
     }
     SDL_free(data);
-    return menu->count ? 0 : SDL_SetError("No CK2 starting-era bookmarks found");
+    return menu->card_count ? 0 : SDL_SetError("No CK2 starting-era bookmarks found");
 }
 
 static int date_order(struct campaign_date date)
@@ -145,8 +157,11 @@ static void load_character_history(struct era_menu *menu, const char *root)
                     struct starting_era *era = &menu->eras[i];
                     for (int j = 0; j < era->count; ++j) {
                         struct era_ruler *ruler = &era->rulers[j];
-                        if (ruler->id == id)
+                        if (ruler->id == id) {
                             ruler->birth = character_birth(p);
+                            if (field(p, "female").size)
+                                ruler->female = is(field(p, "female"), "yes");
+                        }
                     }
                 }
             }
@@ -224,23 +239,56 @@ static void load_localization(struct era_menu *menu, const char *root)
     ck2_free_asset_files(&files);
 }
 
+/* Setup-only bookmarks can list character IDs without authored portrait records. */
+static void load_bookmark_profiles(struct starting_era *era, const char *root)
+{
+    struct ruler_profile profiles[ERA_RULERS];
+    size_t count = 0;
+    for (int i = 0; i < era->count; ++i) {
+        const struct era_ruler *ruler = &era->rulers[i];
+        if (ruler->id && !ruler->name_key[0] && !ruler->culture[0])
+            profiles[count++] = (struct ruler_profile){.id = ruler->id};
+    }
+    if (!count)
+        return;
+    qsort(profiles, count, sizeof profiles[0], ruler_compare);
+    rulers_load(profiles, count, root, era->date);
+    for (int i = 0; i < era->count; ++i) {
+        struct era_ruler *ruler = &era->rulers[i];
+        if (ruler->name_key[0] || ruler->culture[0])
+            continue;
+        const struct ruler_profile key = {.id = ruler->id};
+        const struct ruler_profile *profile = bsearch(&key, profiles, count, sizeof profiles[0], ruler_compare);
+        if (!profile || !profile->name[0])
+            continue;
+        SDL_strlcpy(ruler->name, profile->name, sizeof ruler->name);
+        SDL_strlcpy(ruler->dna, profile->dna, sizeof ruler->dna);
+        SDL_strlcpy(ruler->properties, profile->properties, sizeof ruler->properties);
+        SDL_strlcpy(ruler->culture, profile->culture_key, sizeof ruler->culture);
+        SDL_strlcpy(ruler->religion, profile->religion_key, sizeof ruler->religion);
+        ruler->female = profile->female;
+        ruler->age_known = profile->age_known;
+        ruler->age = profile->age;
+    }
+}
+
 static bool pagan(const struct era_ruler *ruler)
 {
     return strstr(ruler->religion, "pagan") != NULL;
 }
 
-static SDL_Texture *ruler_shield(SDL_Renderer *renderer, const char *root,
-                                 const struct era_ruler *ruler)
+SDL_Texture *era_title_shield(SDL_Renderer *renderer, const char *root, const char *title,
+                              const char *religion)
 {
     char relative[128];
-    SDL_snprintf(relative, sizeof relative, "gfx/flags/%s.tga", ruler->title);
+    SDL_snprintf(relative, sizeof relative, "gfx/flags/%s.tga", title);
     char *path = ck2_asset_path(root, relative);
     SDL_Surface *flag = path ? IMG_Load(path) : NULL;
     free(path);
     if (!flag)
         return NULL;
 
-    path = ck2_asset_path(root, pagan(ruler) ? "gfx/interface/shield_medium_mask_pagan.tga"
+    path = ck2_asset_path(root, strstr(religion, "pagan") ? "gfx/interface/shield_medium_mask_pagan.tga"
                                             : "gfx/interface/shield_medium_mask.tga");
     SDL_Surface *raw_mask = path ? IMG_Load(path) : NULL;
     free(path);
@@ -303,12 +351,15 @@ int era_menu_load(struct era_menu *menu, SDL_Renderer *renderer, const char *roo
     portraits_open(&portraits, root);
     for (int i = 0; i < menu->count; ++i) {
         struct starting_era *era = &menu->eras[i];
-        char path[128];
-        SDL_snprintf(path, sizeof path, "gfx/interface/pick_era_image_%d.dds", era->image);
-        era->card = ck2_load_texture(renderer, root, path);
-        if (!era->card) {
-            portraits_close(&portraits);
-            return -1;
+        load_bookmark_profiles(era, root);
+        if (era->image) {
+            char path[128];
+            SDL_snprintf(path, sizeof path, "gfx/interface/pick_era_image_%d.dds", era->image);
+            era->card = ck2_load_texture(renderer, root, path);
+            if (!era->card) {
+                portraits_close(&portraits);
+                return -1;
+            }
         }
         for (int j = 0; j < era->count; ++j) {
             struct era_ruler *ruler = &era->rulers[j];
@@ -316,7 +367,7 @@ int era_menu_load(struct era_menu *menu, SDL_Renderer *renderer, const char *roo
             if (ruler->title[0] && strspn(ruler->title, "abcdefghijklmnopqrstuvwxyz_0123456789") ==
                 strlen(ruler->title)) {
                 ruler->title_holder = title_holder(root, ruler->title, era->date);
-                ruler->shield = ruler_shield(renderer, root, ruler);
+                ruler->shield = era_title_shield(renderer, root, ruler->title, ruler->religion);
             }
         }
     }
@@ -346,6 +397,8 @@ void era_menu_free(struct era_menu *menu)
                 SDL_DestroyTexture(era->rulers[j].shield);
         }
     }
+    free(menu->eras);
+    *menu = (struct era_menu){0};
 }
 
 static SDL_Rect card_area(int i)
@@ -463,8 +516,8 @@ void era_menu_draw(const struct era_menu *menu, SDL_Renderer *renderer,
     text_line(renderer, &small, text, "Crusader Kings II spans a period of almost 700 years. Choose where in the timeline you want your game to start.", 800, PANEL_Y + 85);
     SDL_SetTextureColorMod(small.font, 255, 255, 255);
     if (menu->selected < 0) {
-        for (int i = 0; i < menu->count; ++i)
-            draw_card(menu, &menu->eras[i], card_area(i), renderer, assets, text, pointer);
+        for (int i = 0; i < menu->card_count; ++i)
+            draw_card(menu, &menu->eras[menu->cards[i]], card_area(i), renderer, assets, text, pointer);
         return;
     }
 
@@ -497,15 +550,27 @@ void era_menu_draw(const struct era_menu *menu, SDL_Renderer *renderer,
     SDL_SetTextureColorMod(small.font, 255, 255, 255);
 }
 
+void era_menu_step_card(struct era_menu *menu, int delta)
+{
+    int selected_card = 0;
+    for (int i = 0; i < menu->card_count; ++i)
+        if (menu->cards[i] == menu->selected)
+            selected_card = i + 1;
+    const int count = menu->card_count + 1;
+    const int next = (selected_card + delta + count) % count;
+    menu->selected = next ? menu->cards[next - 1] : -1;
+    menu->ruler = -1;
+}
+
 bool era_menu_click(struct era_menu *menu, SDL_Point point)
 {
     if (era_menu_deferred(menu, point))
         return true;
-    const int cards = menu->selected < 0 ? menu->count : 1;
+    const int cards = menu->selected < 0 ? menu->card_count : 1;
     for (int i = 0; i < cards; ++i) {
         const SDL_Rect area = card_area(i);
         if (SDL_PointInRect(&point, &area)) {
-            menu->selected = menu->selected < 0 ? i : -1;
+            menu->selected = menu->selected < 0 ? menu->cards[i] : -1;
             menu->ruler = -1;
             return true;
         }
@@ -524,7 +589,7 @@ bool era_menu_click(struct era_menu *menu, SDL_Point point)
 
 bool era_menu_deferred(const struct era_menu *menu, SDL_Point point)
 {
-    const int cards = menu->selected < 0 ? menu->count : 1;
+    const int cards = menu->selected < 0 ? menu->card_count : 1;
     for (int i = 0; i < cards; ++i) {
         const SDL_Rect card = card_area(i);
         const SDL_Rect icons = {card.x + 51, card.y + 190, 71, 34};

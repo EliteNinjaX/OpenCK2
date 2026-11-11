@@ -6,6 +6,7 @@
 #include "../open_launcher/install.h"
 #include "music.h"
 #include "settings.h"
+#include "setup_toolbar.h"
 #include "era.h"
 #include "portraits.h"
 #include "rules.h"
@@ -13,6 +14,7 @@
 #include "holdings.h"
 #include "map_view.h"
 
+#include <SDL_image.h>
 #include <errno.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -20,7 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { WIDTH = 1600, HEIGHT = 900, BUTTON_WIDTH = 232, BUTTON_HEIGHT = 52,
+enum { WIDTH = 1600, HEIGHT = 900, BUTTON_WIDTH = 232, BUTTON_HEIGHT = 52, VASSAL_DISPLAY_LIMIT = 32,
        CREDIT_LINE = 24 };
 
 enum screen { MAIN_MENU, SINGLE_PLAYER, STARTING_ERA, MAP_SETUP, GAME_RULES, OPTIONS, CREDITS, CAMPAIGN };
@@ -45,11 +47,11 @@ struct button {
 };
 
 static const struct button menu_buttons[] = {
-    {{684, 311, BUTTON_WIDTH, BUTTON_HEIGHT}, "Single Player", OPEN_SINGLE_PLAYER},
-    {{684, 361, BUTTON_WIDTH, BUTTON_HEIGHT}, "Multiplayer", MULTIPLAYER},
-    {{684, 411, BUTTON_WIDTH, BUTTON_HEIGHT}, "Options", OPEN_OPTIONS},
-    {{684, 461, BUTTON_WIDTH, BUTTON_HEIGHT}, "Credits", OPEN_CREDITS},
-    {{684, 511, BUTTON_WIDTH, BUTTON_HEIGHT}, "Quit", QUIT},
+    {{0}, "Single Player", OPEN_SINGLE_PLAYER},
+    {{0}, "Multiplayer", MULTIPLAYER},
+    {{0}, "Options", OPEN_OPTIONS},
+    {{0}, "Credits", OPEN_CREDITS},
+    {{0}, "Quit", QUIT},
     {{718, 665, 164, 30}, "Content Settings", CONTENT_SETTINGS},
     {{1186, 851, 83, 30}, "Manual", PDF_LINK},
     {{1276, 851, 124, 30}, "Paradox Plaza", PARADOX_LINK},
@@ -75,12 +77,6 @@ static const struct button rules_buttons[] = {
     {{990, 691, 220, 48}, "Start Game", LAUNCH_CAMPAIGN},
 };
 
-static const struct button setup_buttons[] = {
-    {{24, 836, 220, 48}, "Back", BACK},
-    {{690, 836, 220, 48}, "Game Rules", START_ERA},
-    {{1356, 836, 220, 48}, "Realms / Terrain", TOGGLE_REALMS},
-};
-
 static const struct button credits_buttons[] = {
     {{684, 720, BUTTON_WIDTH, BUTTON_HEIGHT}, "Back", BACK},
 };
@@ -88,8 +84,8 @@ static const struct button credits_buttons[] = {
 static const struct button campaign_buttons[] = {
     {{1331, 40, 216, 24}, NULL, TOGGLE_TIME},
     {{1350, 247, 224, 30}, "Capital", SELECT_HOME},
-    {{58, 678, 232, 40}, "Improve Holding", IMPROVE_HOLDING},
-    {{58, 728, 232, 40}, "Next Month", NEXT_MONTH},
+    {{356, 768, 232, 40}, "Improve Holding", IMPROVE_HOLDING},
+    {{356, 816, 232, 40}, "Next Month", NEXT_MONTH},
     {{1352, 816, 180, 30}, "Realms / Terrain", TOGGLE_REALMS},
     {{1360, 856, 164, 30}, "Main Menu", BACK},
 };
@@ -111,14 +107,22 @@ static bool campaign_map_area(SDL_Point point)
     return true;
 }
 
+struct vassal_art {
+    SDL_Texture *portrait, *shield;
+};
+
 struct menu {
     struct menu_music music;
     struct settings settings;
+    struct setup_toolbar toolbar;
+    struct button setup_buttons[2];
+    struct button main_buttons[SDL_arraysize(menu_buttons)];
     struct era_menu era;
     struct rules_menu rules;
     struct realm_map realms;
     struct portrait_source portrait_source;
-    SDL_Texture *setup_portrait, *campaign_portrait;
+    SDL_Texture *setup_portrait, *setup_shield, *campaign_portrait;
+    struct vassal_art vassal_art[VASSAL_DISPLAY_LIMIT];
     bool portrait_source_loaded;
     enum screen rules_back;
     struct campaign_date start_date;
@@ -127,7 +131,16 @@ struct menu {
     char setup_title[72];
     struct county_holdings holdings;
     size_t vassal_scroll;
-    int selected_holding;
+    int bookmark_scroll, featured_scroll;
+    int bookmark_drag_offset;
+    bool bookmark_scroll_pressed, bookmark_drag;
+    enum lobby_element scroll_list;
+    SDL_Cursor *game_cursor;
+    SDL_Rect holding_panel, holding_rows[2], holding_capital, holding_templates[2];
+    SDL_Rect holding_art_area[2], holding_frame_area[2];
+    float holding_art_scale[2];
+    bool holding_layout_ready;
+    unsigned holding_province;
     SDL_Point drag_start;
     Uint8 drag_button;
     bool realms_visible, campaign_active;
@@ -203,15 +216,41 @@ static void draw_credits(SDL_Renderer *renderer, const struct menu_assets *asset
     SDL_RenderSetClipRect(renderer, NULL);
 }
 
-static const struct button *buttons_for(enum screen screen, size_t *count)
+static int load_main_button_layout(struct menu *menu, const struct menu_assets *assets)
 {
+    static const char *const names[] = {
+        "single_player_menu_button", "multi_player_button", "settings_button",
+        "credits_button", "exit_button"
+    };
+    struct frontend_gui *gui = &menu->toolbar.frontend;
+    if (frontend_gui_load(gui, menu->asset_root) < 0)
+        return -1;
+    const int main = frontend_gui_find(gui, -1, "mainmenu_panel");
+    const int panel = main < 0 ? -1 : frontend_gui_find(gui, main, "mainmenu_bottom_panel_banner");
+    memcpy(menu->main_buttons, menu_buttons, sizeof menu_buttons);
+    int result = 0;
+    for (size_t i = 0; i < SDL_arraysize(names); ++i) {
+        SDL_Rect *area = &menu->main_buttons[i].area;
+        const int button = panel < 0 ? -1 : frontend_gui_find(gui, panel, names[i]);
+        if (!frontend_gui_rect(gui, button, (SDL_Point){WIDTH, HEIGHT}, area) ||
+            SDL_QueryTexture(assets->button, NULL, NULL, &area->w, &area->h) < 0) {
+            result = SDL_SetError("interface/frontend.gui: could not position main menu button %s", names[i]);
+            break;
+        }
+    }
+    return result;
+}
+
+static const struct button *buttons_for(const struct menu *menu, size_t *count)
+{
+    const enum screen screen = menu->screen;
     if (screen == CAMPAIGN) {
         *count = SDL_arraysize(campaign_buttons);
         return campaign_buttons;
     }
     if (screen == MAP_SETUP) {
-        *count = SDL_arraysize(setup_buttons);
-        return setup_buttons;
+        *count = SDL_arraysize(menu->setup_buttons);
+        return menu->setup_buttons;
     }
     if (screen == GAME_RULES) {
         *count = SDL_arraysize(rules_buttons);
@@ -230,7 +269,7 @@ static const struct button *buttons_for(enum screen screen, size_t *count)
         return credits_buttons;
     }
     *count = SDL_arraysize(menu_buttons);
-    return menu_buttons;
+    return menu->main_buttons;
 }
 
 static bool action_unimplemented(enum action action)
@@ -369,6 +408,87 @@ static void draw_single_player(SDL_Renderer *renderer, const struct menu_assets 
     }
 }
 
+static int load_holding_layout(struct menu *menu)
+{
+    struct frontend_gui gui = {0};
+    if (frontend_gui_load_file(&gui, menu->asset_root, "interface/province.gui") < 0)
+        return -1;
+    const SDL_Point viewport = {WIDTH, HEIGHT};
+    const int panel = frontend_gui_find(&gui, -1, "province");
+    const int capital = frontend_gui_find(&gui, -1, "capital_position");
+    static const char *const boxes[] = {"settlements_1_box", "settlements_2_box"};
+    static const char *const templates[] = {"capital_entry", "settlement_entry"};
+    bool valid = frontend_gui_rect(&gui, panel, viewport, &menu->holding_panel) &&
+                 frontend_gui_rect(&gui, capital, viewport, &menu->holding_capital);
+    for (int i = 0; valid && i < 2; ++i) {
+        const int box = frontend_gui_find(&gui, panel, boxes[i]);
+        const int row = frontend_gui_find(&gui, -1, templates[i]);
+        const int art = frontend_gui_find(&gui, row, "settlement_placeholder");
+        const int frame = frontend_gui_find(&gui, row, "province_settlement_frame");
+        valid = frontend_gui_rect(&gui, box, viewport, &menu->holding_rows[i]) &&
+                frontend_gui_rect(&gui, row, viewport, &menu->holding_templates[i]) &&
+                frontend_gui_rect(&gui, art, viewport, &menu->holding_art_area[i]) &&
+                frontend_gui_rect(&gui, frame, viewport, &menu->holding_frame_area[i]) &&
+                menu->holding_templates[i].w > 0;
+        menu->holding_art_scale[i] = 1;
+        if (valid) {
+            char scale[24], *end;
+            copy_token(scale, sizeof scale, field(gui.blocks[art].body, "scale"));
+            const float value = strtof(scale, &end);
+            if (*scale && !*end && value > 0 && value <= 4)
+                menu->holding_art_scale[i] = value;
+        }
+    }
+    frontend_gui_free(&gui);
+    if (!valid)
+        return SDL_SetError("interface/province.gui: missing campaign holding layout");
+    menu->holding_layout_ready = true;
+    return 0;
+}
+
+static SDL_Rect place_holding_texture(SDL_Texture *texture, SDL_Rect origin, SDL_Rect offset, float scale)
+{
+    int w = 0, h = 0;
+    SDL_QueryTexture(texture, NULL, NULL, &w, &h);
+    return (SDL_Rect){origin.x + offset.x, origin.y + offset.y, (int)(w * scale), (int)(h * scale)};
+}
+
+static void draw_campaign_holdings(SDL_Renderer *renderer, const struct menu_assets *assets,
+                                   const struct menu *menu)
+{
+    const struct county_holdings *county = &menu->holdings;
+    const int columns = SDL_max(1, menu->holding_rows[0].w / menu->holding_templates[1].w);
+    int panel_width = 0;
+    SDL_QueryTexture(assets->hud_province, NULL, NULL, &panel_width, NULL);
+    const int visible_columns = SDL_max(1, SDL_min(columns,
+        (panel_width - (menu->holding_rows[0].x - menu->holding_panel.x)) / menu->holding_templates[1].w));
+    for (size_t i = 0; i < county->capacity; ++i) {
+        const int row = i ? (int)(i - 1) / visible_columns : 0;
+        if (i && row >= 2)
+            break;
+        SDL_Rect origin = menu->holding_panel;
+        if (!i) {
+            origin.x += menu->holding_capital.x;
+            origin.y += menu->holding_capital.y;
+        } else {
+            origin = menu->holding_rows[row];
+            origin.x += (int)((i - 1) % (size_t)visible_columns) *
+                        menu->holding_templates[1].w;
+        }
+        const int template = i ? 1 : 0;
+        SDL_Texture *frame = i ? assets->holding_frame : assets->holding_capital;
+        const struct holding *slot = i < county->count ? &county->slots[i] : NULL;
+        SDL_Texture *art = assets->holding_art[slot ? slot->type : HOLDING_EMPTY];
+        const SDL_Rect frame_rect = place_holding_texture(frame, origin, menu->holding_frame_area[template], 1);
+        const SDL_Rect art_rect = place_holding_texture(art, origin, menu->holding_art_area[template], menu->holding_art_scale[template]);
+        SDL_RenderCopy(renderer, frame, NULL, &frame_rect);
+        SDL_RenderCopy(renderer, art, NULL, &art_rect);
+        if (SDL_PointInRect(&menu->pointer, &frame_rect))
+            campaign_text(renderer, assets, slot ? (*slot->name ? slot->name : slot->id) : "Empty holding slot",
+                          menu->holding_panel.x + 174, menu->holding_rows[0].y - 26);
+    }
+}
+
 static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *assets,
                           const struct menu *menu)
 {
@@ -391,7 +511,7 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
     blit(renderer, assets->hud_resources_left, 1260, 0);
     blit(renderer, assets->hud_resources_right, 1422, 0);
     blit(renderer, assets->hud_outliner, 1324, 213);
-    blit(renderer, assets->hud_province, 0, 276);
+    blit(renderer, assets->hud_province, menu->holding_panel.x, menu->holding_panel.y);
     blit(renderer, assets->hud_minimap, 1320, 696);
     blit(renderer, assets->hud_map, 1329, 705);
 
@@ -404,16 +524,18 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
     if (menu->selected)
         campaign_text(renderer, assets, menu->selected->name, center, 291);
     const bool owns_selection = menu->selected && menu->selected->id == menu->home_province;
-    campaign_text(renderer, assets, owns_selection ? "Your county" : "Outside your county", 231, 349);
+    campaign_text(renderer, assets, owns_selection ? "Your county" : "Outside your county", 99, 349);
     snprintf(line, sizeof line, "+%u gold per month", campaign_monthly_income(&menu->campaign));
-    campaign_text(renderer, assets, line, 231, 379);
+    campaign_text(renderer, assets, line, 99, 379);
     snprintf(line, sizeof line, "Holding upgrades: %u / %d", menu->campaign.improvements, IMPROVEMENT_LIMIT);
     SDL_SetTextureColorMod(assets->font, 36, 26, 16);
-    campaign_text(renderer, assets, line, center, 635);
+    campaign_text(renderer, assets, line, center, 600);
     SDL_SetTextureColorMod(assets->font, 255, 255, 255);
 
+    if (menu->selected)
+        draw_campaign_holdings(renderer, assets, menu);
     campaign_text(renderer, assets, campaign_goal_met(&menu->campaign) ? "Goal complete"
-                  : "Upgrade your capital and reach 100 gold.", center, 809);
+                  : "Upgrade your capital and reach 100 gold.", 472, 740);
 }
 
 static void select_province(struct menu *menu, const struct province *province)
@@ -423,6 +545,11 @@ static void select_province(struct menu *menu, const struct province *province)
     if (menu->province_overlay)
         SDL_DestroyTexture(menu->province_overlay);
     menu->selected = province;
+    const unsigned id = province ? province->id : 0;
+    if (menu->holding_province != id) {
+        holdings_load(&menu->holdings, menu->asset_root, province, menu->start_date);
+        menu->holding_province = id;
+    }
     menu->province_overlay = province ? province_highlight(&menu->provinces, menu->renderer,
                                                             province, &menu->campaign_map) : NULL;
 }
@@ -462,53 +589,17 @@ static bool load_realms(struct menu *menu, SDL_Window *window, struct campaign_d
     return true;
 }
 
-static const SDL_Rect setup_list = {0, 0, 226, 483};
-static const SDL_Rect setup_info = {1374, 0, 226, 565};
-static const SDL_Rect setup_holdings = {1374, 570, 226, 208};
-static const SDL_Rect setup_liege = {1388, 253, 198, 25};
-enum { SETUP_MODE_COUNT = 8 };
-static const SDL_Rect setup_world[] = {{559, 2, 83, 84}, {956, 2, 83, 84}};
-
-static SDL_Rect setup_mode_area(int index)
+static SDL_Rect lobby_row(const struct menu *menu, enum lobby_element list, int index)
 {
-    return (SDL_Rect){673 + index * 28, 69, 28, 22};
+    const enum lobby_element template = list == LOBBY_BOOKMARKS ? LOBBY_BOOKMARK_ROW : LOBBY_CHARACTER_ROW;
+    const SDL_Rect box = menu->toolbar.lobby[list].area, row = menu->toolbar.lobby[template].area;
+    return (SDL_Rect){box.x + row.x, box.y + row.y + row.h * index, box.w, row.h};
 }
 
-static int setup_mode_at(SDL_Point point)
+static int lobby_rows(const struct menu *menu, enum lobby_element list)
 {
-    for (int i = 0; i < SETUP_MODE_COUNT; ++i) {
-        const SDL_Rect area = setup_mode_area(i);
-        if (SDL_PointInRect(&point, &area))
-            return i;
-    }
-    return -1;
-}
-
-static bool setup_deferred(SDL_Point point)
-{
-    return setup_mode_at(point) >= 2 || SDL_PointInRect(&point, &setup_world[0]) ||
-           SDL_PointInRect(&point, &setup_world[1]);
-}
-enum { VASSAL_ROWS = 4 };
-
-static SDL_Rect bookmark_area(int index)
-{
-    return (SDL_Rect){12, 69 + 29 * index, 202, 28};
-}
-
-static SDL_Rect vassal_area(int index)
-{
-    return (SDL_Rect){1388, 340 + 49 * index, 198, 48};
-}
-
-static SDL_Rect holding_area(size_t index)
-{
-    return (SDL_Rect){1386 + 49 * (int)(index % 4), 618 + 46 * (int)(index / 4), 45, 43};
-}
-
-static SDL_Rect featured_area(int index)
-{
-    return (SDL_Rect){12, 250 + 35 * index, 202, 34};
+    const SDL_Rect row = lobby_row(menu, list, 0);
+    return row.h > 0 ? menu->toolbar.lobby[list].area.h / row.h : 0;
 }
 
 static const struct era_ruler *featured_ruler(const struct starting_era *era, unsigned id)
@@ -557,53 +648,184 @@ static void setup_label(SDL_Renderer *renderer, const struct menu_assets *assets
     SDL_RenderSetClipRect(renderer, NULL);
 }
 
+static void setup_description(SDL_Renderer *renderer, const struct menu_assets *assets,
+                              const char *text, SDL_Rect box)
+{
+    SDL_RenderSetClipRect(renderer, &box);
+    for (int y = box.y; *text && y + 18 <= box.y + box.h; y += 18) {
+        while (*text == ' ')
+            ++text;
+        const char *end = text, *space = NULL;
+        int width = 0, before_space = 0;
+        while (*end && *end != '\n') {
+            const int advance = assets->glyphs[(unsigned char)*end].advance;
+            if (width + advance > box.w && end != text)
+                break;
+            if (*end == ' ') {
+                space = end;
+                before_space = width;
+            }
+            width += advance;
+            ++end;
+        }
+        if (*end && *end != '\n' && space && space > text) {
+            end = space;
+            width = before_space;
+        }
+        centered_text(renderer, assets, text, (size_t)(end - text), box.x + width / 2, y);
+        text = *end == '\n' ? end + 1 : end;
+    }
+    SDL_RenderSetClipRect(renderer, NULL);
+}
+
+static void setup_left_label(SDL_Renderer *renderer, const struct menu_assets *assets,
+                             const char *text, SDL_Rect area)
+{
+    int width = 0;
+    for (const unsigned char *p = (const unsigned char *)text; *p; ++p)
+        width += assets->glyphs[*p].advance;
+    SDL_RenderSetClipRect(renderer, &area);
+    centered_text(renderer, assets, text, strlen(text), area.x + width / 2,
+                  area.y + SDL_max(0, (area.h - 18) / 2));
+    SDL_RenderSetClipRect(renderer, NULL);
+}
+
+static int rank_frame(char rank)
+{
+    return rank == 'e' ? 5 : rank == 'k' ? 4 : rank == 'd' ? 3 : rank == 'c' ? 2 : 1;
+}
+
+static void draw_widget_frame(SDL_Renderer *renderer, const struct setup_widget *widget, int frame)
+{
+    const SDL_Rect source = {SDL_clamp(frame, 0, widget->frames - 1) * widget->area.w,
+                             0, widget->area.w, widget->area.h};
+    SDL_RenderCopy(renderer, widget->texture, &source, &widget->area);
+}
+
+static void setup_scrollbar(const struct menu *menu, enum lobby_element element, int offset,
+                            int maximum, struct setup_widget parts[SETUP_SCROLL_PARTS])
+{
+    memcpy(parts, menu->toolbar.scroll, sizeof menu->toolbar.scroll);
+    const SDL_Rect list = menu->toolbar.lobby[element].area;
+    struct setup_widget *up = &parts[SETUP_SCROLL_UP], *down = &parts[SETUP_SCROLL_DOWN];
+    struct setup_widget *track = &parts[SETUP_SCROLL_TRACK], *thumb = &parts[SETUP_SCROLL_THUMB];
+    for (int i = 0; i < SETUP_SCROLL_PARTS; ++i)
+        parts[i].area.x = list.x + list.w - (element == LOBBY_VASSALS ? parts[i].area.w : 0);
+    up->area.y = list.y;
+    down->area.y = list.y + list.h - down->area.h;
+    track->area.y = up->area.y + up->area.h;
+    track->area.h = SDL_max(0, down->area.y - track->area.y);
+    thumb->area.y = track->area.y + SDL_max(0, track->area.h - thumb->area.h) *
+        offset / SDL_max(1, maximum);
+}
+
+static void draw_setup_scrollbar(const struct menu *menu, SDL_Renderer *renderer,
+                                  enum lobby_element list, int offset, int maximum)
+{
+    if (maximum <= 0)
+        return;
+    struct setup_widget parts[SETUP_SCROLL_PARTS];
+    setup_scrollbar(menu, list, offset, maximum, parts);
+    const struct setup_widget *track = &menu->toolbar.scroll[SETUP_SCROLL_TRACK];
+    const SDL_Rect source = {0, 0, track->area.w, track->area.h};
+    SDL_RenderCopy(renderer, track->texture, &source, &parts[SETUP_SCROLL_TRACK].area);
+    setup_widget_draw(&parts[SETUP_SCROLL_UP], renderer, menu->pointer);
+    setup_widget_draw(&parts[SETUP_SCROLL_DOWN], renderer, menu->pointer);
+    setup_widget_draw(&parts[SETUP_SCROLL_THUMB], renderer, menu->pointer);
+}
+
 static void draw_setup(SDL_Renderer *renderer, const struct menu_assets *assets, const struct menu *menu)
 {
     struct menu_assets small = {.font = menu->era.small_font};
     memcpy(small.glyphs, menu->era.small_glyphs, sizeof small.glyphs);
-    char date[48];
+    char date[48], year[16];
     const struct starting_era *era = &menu->era.eras[menu->era.selected];
+    const struct setup_widget *ui = menu->toolbar.lobby;
+    setup_toolbar_draw(&menu->toolbar, renderer, menu->pointer);
+    for (int i = LOBBY_YEAR_UP1; i <= LOBBY_DAY_DOWN; ++i)
+        setup_widget_draw(&ui[i], renderer, menu->pointer);
     format_campaign_date(date, sizeof date, era->date);
-    SDL_RenderCopy(renderer, assets->setup_world_ornament, NULL, &(SDL_Rect){502, 1, 198, 86});
-    SDL_RenderCopy(renderer, assets->setup_world_ornament, NULL, &(SDL_Rect){899, 1, 198, 86});
-    for (size_t i = 0; i < SDL_arraysize(setup_world); ++i)
-        SDL_RenderCopy(renderer, assets->setup_world[i], NULL, &setup_world[i]);
-    SDL_RenderCopy(renderer, assets->lobby_date, NULL, &(SDL_Rect){646, 0, 309, 95});
+    char *last = strrchr(date, ' ');
+    if (last)
+        *last = '\0';
+    SDL_snprintf(year, sizeof year, "%d", era->date.year);
     SDL_SetTextureColorMod(small.font, 39, 26, 15);
-    campaign_text(renderer, &small, date, 800, 28);
+    campaign_text(renderer, &small, date, ui[LOBBY_DAYMONTH].area.x + ui[LOBBY_DAYMONTH].area.w / 2,
+                  ui[LOBBY_DAYMONTH].area.y);
+    campaign_text(renderer, &small, year, ui[LOBBY_YEAR].area.x + ui[LOBBY_YEAR].area.w / 2,
+                  ui[LOBBY_YEAR].area.y);
     SDL_SetTextureColorMod(small.font, 255, 255, 255);
-    for (int i = 0; i < SETUP_MODE_COUNT; ++i) {
-        const SDL_Rect area = setup_mode_area(i);
-        const bool hover = SDL_PointInRect(&menu->pointer, &area);
-        SDL_RenderCopy(renderer, assets->setup_modes[i], &(SDL_Rect){hover ? 28 : 0, 0, 28, 22}, &area);
-    }
-    campaign_text(renderer, &small, "Click a county to select its ruler  |  Shift-click for the realm", 800, 92);
+    setup_label(renderer, &small, menu->toolbar.prompt, ui[LOBBY_PROMPT].area, 0);
 
-    SDL_RenderCopy(renderer, assets->lobby_left, NULL, &setup_list);
-    SDL_RenderCopy(renderer, assets->lobby_characters, NULL, &(SDL_Rect){8, 216, 210, 250});
-    campaign_text(renderer, &small, "Bookmarked dates", 113, 44);
-    campaign_text(renderer, &small, "Interesting Characters", 113, 225);
-    SDL_SetTextureColorMod(small.font, 39, 26, 15);
-    for (int i = 0; i < menu->era.count; ++i) {
-        const SDL_Rect row = bookmark_area(i);
-        const SDL_Rect frame = {i == menu->era.selected ? 280 : 0, 0, 280, 64};
-        SDL_RenderCopy(renderer, assets->lobby_bookmark, &frame, &row);
-        char label[128];
-        snprintf(label, sizeof label, "%s (%d)", menu->era.eras[i].name, menu->era.eras[i].date.year);
-        setup_label(renderer, &small, label, row, 0);
+    setup_widget_draw(&ui[LOBBY_BOTTOM], renderer, menu->pointer);
+    setup_description(renderer, &small, era->description, ui[LOBBY_DESCRIPTION].area);
+    const SDL_Rect expansions = ui[LOBBY_EXPANSIONS].area;
+    const int step = ui[LOBBY_EXPANSION_ROW].area.w + menu->toolbar.expansion_spacing;
+    for (int i = 0; i < CK2_DLC_ICON_COUNT && step > 0 && (i + 1) * step <= expansions.w; ++i) {
+        if (!assets->dlc_icons[i])
+            continue;
+        bool enabled = false;
+        for (size_t j = 0; j < menu->catalog.dlc.count; ++j) {
+            const struct content_entry *entry = &menu->catalog.dlc.entries[j];
+            if (entry->icon == i && entry->installed && entry->enabled) {
+                enabled = true;
+                break;
+            }
+        }
+        const SDL_Rect source = {enabled ? 0 : 64, 0, 32, 32};
+        const SDL_Rect target = {expansions.x + step * i, expansions.y, 32, 32};
+        SDL_RenderCopy(renderer, assets->dlc_icons[i], &source, &target);
     }
+
+    setup_widget_draw(&ui[LOBBY_LEFT], renderer, menu->pointer);
+    setup_widget_draw(&ui[LOBBY_CHARACTERS], renderer, menu->pointer);
+    setup_widget_draw(&ui[LOBBY_LOAD], renderer, menu->pointer);
+    setup_label(renderer, &small, menu->toolbar.load_label, ui[LOBBY_LOAD].area, 0);
+    setup_label(renderer, &small, menu->toolbar.bookmarks_label, ui[LOBBY_BOOKMARK_LABEL].area, 0);
+    setup_label(renderer, &small, menu->toolbar.featured_label, ui[LOBBY_FEATURED_LABEL].area, 0);
+    SDL_SetTextureColorMod(small.font, 39, 26, 15);
+    const int bookmarks = lobby_rows(menu, LOBBY_BOOKMARKS);
+    for (int slot = 0; slot < bookmarks && slot + menu->bookmark_scroll < menu->era.count; ++slot) {
+        const int i = slot + menu->bookmark_scroll;
+        const SDL_Rect row = lobby_row(menu, LOBBY_BOOKMARKS, slot);
+        struct setup_widget art = ui[LOBBY_BOOKMARK_ART];
+        art.area.x += row.x;
+        art.area.y += row.y;
+        if (art.frames > 1 && i == menu->era.selected)
+            SDL_SetTextureColorMod(art.texture, 225, 225, 225);
+        setup_widget_draw(&art, renderer, menu->pointer);
+        SDL_SetTextureColorMod(art.texture, 255, 255, 255);
+    }
+    for (int slot = 0; slot < bookmarks && slot + menu->bookmark_scroll < menu->era.count; ++slot) {
+        const int i = slot + menu->bookmark_scroll;
+        const SDL_Rect row = lobby_row(menu, LOBBY_BOOKMARKS, slot);
+        char label[48];
+        format_campaign_date(label, sizeof label, menu->era.eras[i].date);
+        SDL_Rect name_box = ui[LOBBY_BOOKMARK_TITLE].area;
+        SDL_Rect date_box = ui[LOBBY_BOOKMARK_DATE].area;
+        name_box.x += row.x;
+        name_box.y += row.y;
+        date_box.x += row.x;
+        date_box.y += row.y;
+        setup_description(renderer, &small, menu->era.eras[i].name, name_box);
+        setup_description(renderer, &small, label, date_box);
+    }
+    draw_setup_scrollbar(menu, renderer, LOBBY_BOOKMARKS, menu->bookmark_scroll,
+                         menu->era.count - bookmarks);
     const char *title = "";
     unsigned capital = 0;
     const struct ruler_profile *profile = setup_profile(menu, &title, &capital);
-    for (int i = 0; i < era->count; ++i) {
-        const struct era_ruler *ruler = &era->rulers[i];
-        const SDL_Rect row = featured_area(i);
+    for (int slot = 0; slot < lobby_rows(menu, LOBBY_FEATURED) && slot + menu->featured_scroll < era->count; ++slot) {
+        const struct era_ruler *ruler = &era->rulers[slot + menu->featured_scroll];
+        const SDL_Rect row = lobby_row(menu, LOBBY_FEATURED, slot);
         if (profile && profile->id == ruler->id)
-            SDL_RenderCopy(renderer, assets->lobby_bookmark, &(SDL_Rect){280, 0, 280, 64}, &row);
+            SDL_RenderCopy(renderer, assets->lobby_row, NULL, &row);
         era_draw_portrait(&menu->era, renderer, ruler->portrait, ruler->title[0],
-                          (SDL_Rect){row.x + 2, row.y + 1, 34, 34});
-        setup_label(renderer, &small, ruler->name, row, 38);
+                          (SDL_Rect){row.x + 2, row.y + 2, 50, 50});
+        setup_label(renderer, &small, ruler->name, row, 54);
     }
+    draw_setup_scrollbar(menu, renderer, LOBBY_FEATURED, menu->featured_scroll,
+                         era->count - lobby_rows(menu, LOBBY_FEATURED));
     SDL_SetTextureColorMod(small.font, 255, 255, 255);
 
     const struct era_ruler *ruler = profile ? featured_ruler(era, profile->id)
@@ -612,80 +834,98 @@ static void draw_setup(SDL_Renderer *renderer, const struct menu_assets *assets,
         return;
     struct realm_title_info info = {0}, liege = {0};
     inspected_title(menu, &info);
-    SDL_RenderCopy(renderer, assets->lobby_right, NULL, &setup_info);
-    const int center = setup_info.x + setup_info.w / 2;
+    setup_widget_draw(&ui[LOBBY_RIGHT], renderer, menu->pointer);
     SDL_SetTextureColorMod(small.font, 39, 26, 15);
     setup_label(renderer, &small, ruler ? ruler->name : profile && *profile->name ? profile->name :
-                profile ? info.name : "No recorded holder", (SDL_Rect){1386, 45, 202, 30}, 0);
+                profile ? info.name : "No recorded holder", ui[LOBBY_RULER].area, 0);
     SDL_Texture *portrait = menu->setup_portrait ? menu->setup_portrait : ruler ? ruler->portrait : NULL;
-    era_draw_portrait(&menu->era, renderer, portrait,
-                      *info.id ? info.id[0] : 'c', (SDL_Rect){1396, 93, 107, 107});
-    if (ruler && ruler->shield)
-        SDL_RenderCopy(renderer, ruler->shield, NULL, &(SDL_Rect){1393, 160, 32, 32});
+    const int frame = rank_frame(*info.id ? info.id[0] : 'c');
+    if (portrait) {
+        SDL_RenderCopy(renderer, portrait, NULL, &ui[LOBBY_PORTRAIT].area);
+        draw_widget_frame(renderer, &ui[LOBBY_PORTRAIT_FRAME], frame);
+    }
+    SDL_Texture *shield = menu->setup_shield ? menu->setup_shield : ruler ? ruler->shield : NULL;
+    if (shield) {
+        SDL_Rect arms = ui[LOBBY_SHIELD].area;
+        SDL_QueryTexture(shield, NULL, NULL, &arms.w, &arms.h);
+        SDL_RenderCopy(renderer, shield, NULL, &arms);
+        draw_widget_frame(renderer, &ui[LOBBY_CROWN], frame);
+    }
     if (profile && profile->dynasty[0])
-        setup_label(renderer, &small, profile->dynasty, (SDL_Rect){1503, 104, 84, 29}, 0);
+        setup_left_label(renderer, &small, profile->dynasty, ui[LOBBY_DYNASTY].area);
+    struct menu_assets details = {.font = menu->toolbar.detail_font};
+    memcpy(details.glyphs, menu->toolbar.detail_glyphs, sizeof details.glyphs);
+    SDL_SetTextureColorMod(details.font, 0, 0, 0);
     if (!title[0])
         title = *info.name ? info.name : ruler ? ruler->title_name : "";
-    setup_label(renderer, &small, title, (SDL_Rect){1386, 203, 202, 22}, 0);
+    setup_left_label(renderer, &details, title, ui[LOBBY_TITLE].area);
+    setup_left_label(renderer, &details, profile && *profile->culture ? profile->culture : "-",
+                ui[LOBBY_CULTURE].area);
+    setup_left_label(renderer, &details, profile && *profile->religion ? profile->religion : "-",
+                ui[LOBBY_RELIGION].area);
     char line[192];
-    SDL_snprintf(line, sizeof line, "%s  |  %s", profile && *profile->culture ? profile->culture : "-",
-                 profile && *profile->religion ? profile->religion : "-");
-    setup_label(renderer, &small, line, (SDL_Rect){1386, 225, 202, 22}, 0);
-    if (profile && profile->religion_icon > 0 && profile->religion_icon <= 59)
-        SDL_RenderCopy(renderer, assets->religion_icons,
-                       &(SDL_Rect){32 * ((int)profile->religion_icon - 1), 0, 32, 32},
-                       &(SDL_Rect){1390, 226, 18, 18});
     if (realm_title_info(&menu->realms, info.liege, &liege) && liege.holder) {
-        SDL_RenderCopy(renderer, assets->lobby_bookmark, &(SDL_Rect){0, 0, 280, 64}, &setup_liege);
         SDL_snprintf(line, sizeof line, "Liege: %s", liege.name);
-        setup_label(renderer, &small, line, setup_liege, 0);
+        setup_left_label(renderer, &details, line, ui[LOBBY_STATUS].area);
     } else if (info.holder) {
-        campaign_text(renderer, &small, "Independent", center, 257);
+        setup_left_label(renderer, &details, "Independent", ui[LOBBY_STATUS].area);
     }
-    struct realm_title_info vassals[VASSAL_ROWS];
-    const size_t total = realm_vassal_titles(&menu->realms, &info, menu->vassal_scroll, vassals, VASSAL_ROWS);
-    for (size_t i = 0; i < VASSAL_ROWS && menu->vassal_scroll + i < total; ++i) {
-        const SDL_Rect row = vassal_area((int)i);
-        const struct ruler_profile *vassal = realm_ruler(&menu->realms, vassals[i].holder);
+    SDL_RenderCopy(renderer, ui[LOBBY_DIFFICULTY_TRACK].texture, NULL, &ui[LOBBY_DIFFICULTY_TRACK].area);
+    setup_widget_draw(&ui[LOBBY_DIFFICULTY], renderer, menu->pointer);
+    setup_label(renderer, &small, menu->toolbar.difficulty_label, ui[LOBBY_DIFFICULTY_LABEL].area, 0);
+    setup_label(renderer, &small, menu->toolbar.diplomacy_label, ui[LOBBY_DIPLOMACY_LABEL].area, 0);
+    struct realm_title_info vassals[VASSAL_DISPLAY_LIMIT];
+    const int rows = SDL_min(lobby_rows(menu, LOBBY_VASSALS), (int)SDL_arraysize(vassals));
+    const size_t total = realm_vassal_titles(&menu->realms, &info, menu->vassal_scroll, vassals, rows);
+    for (int i = 0; i < rows && menu->vassal_scroll + (size_t)i < total; ++i) {
+        const struct realm_title_info vassal_title = vassals[i];
+        const SDL_Rect row = lobby_row(menu, LOBBY_VASSALS, i);
+        const struct ruler_profile *vassal = realm_ruler(&menu->realms, vassal_title.holder);
         if (SDL_PointInRect(&menu->pointer, &row))
             SDL_RenderCopy(renderer, assets->lobby_row, NULL, &row);
-        SDL_snprintf(line, sizeof line, "%s", vassal && *vassal->name ? vassal->name : vassals[i].name);
-        setup_label(renderer, &small, line, (SDL_Rect){row.x, row.y, row.w, 23}, 0);
-        setup_label(renderer, &small, vassals[i].name, (SDL_Rect){row.x, row.y + 21, row.w, 23}, 0);
-    }
-    SDL_SetTextureColorMod(small.font, 255, 255, 255);
-    SDL_snprintf(line, sizeof line, "Vassals: %zu", total);
-    campaign_text(renderer, &small, line, center, 315);
-
-    if (!menu->holdings.capacity)
-        return;
-    SDL_RenderCopy(renderer, assets->lobby_characters, NULL, &setup_holdings);
-    campaign_text(renderer, &small, "County Holdings", center, 582);
-    for (size_t i = 0; i < menu->holdings.capacity; ++i) {
-        const SDL_Rect area = holding_area(i);
-        const struct holding *slot = i < menu->holdings.count ? &menu->holdings.slots[i] : NULL;
-        SDL_RenderCopy(renderer, i == 0 ? assets->holding_capital : assets->holding_frame, NULL, &area);
-        const SDL_Rect inset = {area.x + 4, area.y + 3, area.w - 8, area.h - 6};
-        SDL_RenderCopy(renderer, assets->holding_art[slot ? slot->type : HOLDING_EMPTY], NULL, &inset);
-        if (SDL_PointInRect(&menu->pointer, &area) || (int)i == menu->selected_holding) {
-            SDL_SetTextureColorMod(small.font, 39, 26, 15);
-            static const char *const types[] = {"Empty holding slot", "Castle", "City", "Temple", "Tribe", "Nomad"};
-            if (slot)
-                snprintf(line, sizeof line, "%s%s: %s", i == 0 ? "Capital " : "", types[slot->type],
-                         *slot->name ? slot->name : slot->id);
-            else
-                SDL_strlcpy(line, types[HOLDING_EMPTY], sizeof line);
-            setup_label(renderer, &small, line, (SDL_Rect){1385, 754, 199, 21}, 0);
-            SDL_SetTextureColorMod(small.font, 255, 255, 255);
+        const struct vassal_art *art = &menu->vassal_art[i];
+        const int rank = rank_frame(vassal_title.id[0]);
+        SDL_Rect face = ui[LOBBY_ROW_PORTRAIT].area;
+        face.x += row.x;
+        face.y += row.y;
+        if (art->portrait) {
+            SDL_RenderCopy(renderer, art->portrait, NULL, &face);
+            struct setup_widget frame = ui[LOBBY_ROW_FRAME];
+            frame.area.x += row.x;
+            frame.area.y += row.y;
+            draw_widget_frame(renderer, &frame, rank);
         }
+        if (art->shield) {
+            SDL_Rect arms = ui[LOBBY_ROW_SHIELD].area;
+            arms.x += row.x;
+            arms.y += row.y;
+            arms.w = arms.h = 22;
+            SDL_RenderCopy(renderer, art->shield, NULL, &arms);
+        }
+        SDL_Rect name = ui[LOBBY_ROW_NAME].area;
+        name.x += row.x;
+        name.y += row.y;
+        SDL_snprintf(line, sizeof line, "%s\n%s", vassal && *vassal->name ? vassal->name : vassal_title.name,
+                     vassal_title.name);
+        setup_description(renderer, &small, line, name);
     }
+    draw_setup_scrollbar(menu, renderer, LOBBY_VASSALS, (int)menu->vassal_scroll, (int)total - rows);
+    SDL_SetTextureColorMod(small.font, 255, 255, 255);
+    setup_label(renderer, &small, menu->toolbar.vassals_label, ui[LOBBY_VASSALS_LABEL].area, 0);
+    SDL_snprintf(line, sizeof line, "%zu", total);
+    SDL_Rect amount = ui[LOBBY_VASSALS_AMOUNT].area;
+    amount.x += amount.w * 3 / 4;
+    amount.w /= 4;
+    setup_label(renderer, &small, line, amount, 0);
+
+
 }
 
 static void setup_tooltip(SDL_Renderer *renderer, const struct menu_assets *assets, const struct menu *menu)
 {
     const SDL_Point point = menu->pointer;
-    if (point.y < 110 || point.y > 824 || SDL_PointInRect(&point, &setup_list) ||
-        SDL_PointInRect(&point, &setup_info) || SDL_PointInRect(&point, &setup_holdings))
+    if (point.y < 110 || point.y > 824 || SDL_PointInRect(&point, &menu->toolbar.lobby[LOBBY_BOTTOM].area) || SDL_PointInRect(&point, &menu->toolbar.lobby[LOBBY_LEFT].area) ||
+        SDL_PointInRect(&point, &menu->toolbar.lobby[LOBBY_RIGHT].area))
         return;
     SDL_Point world;
     if (!map_view_pick(&menu->campaign_map, point.x, point.y, &world))
@@ -721,7 +961,14 @@ static void open_campaign(struct menu *menu, SDL_Window *window, bool new_game)
 {
     if (!load_campaign_map(menu, window))
         return;
+    if (!menu->holding_layout_ready && load_holding_layout(menu) < 0) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Province holdings", SDL_GetError(), window);
+        return;
+    }
     if (new_game) {
+        menu->selected = NULL;
+        menu->holding_province = 0;
+        menu->holdings = (struct county_holdings){0};
         campaign_start(&menu->campaign);
         const struct starting_era *era = &menu->era.eras[menu->era.selected];
         menu->start_date = era->date;
@@ -774,30 +1021,83 @@ static void move_map(struct menu *menu, SDL_Window *window, int dx, int dy, int 
     }
 }
 
-static void preview_portrait(struct menu *menu, const struct ruler_profile *profile)
+static SDL_Texture *setup_character_portrait(struct menu *menu, const struct ruler_profile *profile)
 {
-    if (menu->setup_portrait)
-        SDL_DestroyTexture(menu->setup_portrait);
-    menu->setup_portrait = NULL;
-    const struct starting_era *era = &menu->era.eras[menu->era.selected];
-    if (!profile || !profile->dna[0])
-        return;
+    if (!profile || !profile->name[0])
+        return NULL;
     if (!menu->portrait_source_loaded) {
         portraits_open(&menu->portrait_source, menu->asset_root);
         menu->portrait_source_loaded = true;
     }
-    struct era_ruler ruler = {.age = profile->age, .portrait_year = era->date.year};
+    struct era_ruler ruler = {.id = profile->id, .age = profile->age,
+        .portrait_year = menu->era.eras[menu->era.selected].date.year,
+        .female = profile->female, .age_known = profile->age_known};
     SDL_strlcpy(ruler.dna, profile->dna, sizeof ruler.dna);
     SDL_strlcpy(ruler.properties, profile->properties, sizeof ruler.properties);
     SDL_strlcpy(ruler.culture, profile->culture_key, sizeof ruler.culture);
     SDL_strlcpy(ruler.religion, profile->religion_key, sizeof ruler.religion);
-    menu->setup_portrait = portrait_render(&menu->portrait_source, menu->renderer, menu->asset_root, &ruler);
+    return portrait_render(&menu->portrait_source, menu->renderer, menu->asset_root, &ruler);
+}
+
+static void refresh_vassal_art(struct menu *menu, const struct realm_title_info *title)
+{
+    struct realm_title_info rows[VASSAL_DISPLAY_LIMIT];
+    const int limit = SDL_min(lobby_rows(menu, LOBBY_VASSALS), VASSAL_DISPLAY_LIMIT);
+    const size_t total = title ? realm_vassal_titles(&menu->realms, title, menu->vassal_scroll, rows, limit) : 0;
+    for (size_t i = 0; i < SDL_arraysize(menu->vassal_art); ++i) {
+        struct vassal_art *art = &menu->vassal_art[i];
+        SDL_DestroyTexture(art->portrait);
+        SDL_DestroyTexture(art->shield);
+        *art = (struct vassal_art){0};
+        if (i >= (size_t)limit || menu->vassal_scroll + i >= total)
+            continue;
+        const struct ruler_profile *profile = realm_ruler(&menu->realms, rows[i].holder);
+        art->portrait = setup_character_portrait(menu, profile);
+        art->shield = era_title_shield(menu->renderer, menu->asset_root, rows[i].id,
+                                       profile ? profile->religion_key : "");
+    }
+}
+
+static void preview_portrait(struct menu *menu, const struct realm_title_info *title)
+{
+    SDL_DestroyTexture(menu->setup_portrait);
+    SDL_DestroyTexture(menu->setup_shield);
+    const struct ruler_profile *profile = title ? realm_ruler(&menu->realms, title->holder) : NULL;
+    menu->setup_portrait = setup_character_portrait(menu, profile);
+    menu->setup_shield = title ? era_title_shield(menu->renderer, menu->asset_root, title->id,
+                                                  profile ? profile->religion_key : "") : NULL;
+    refresh_vassal_art(menu, title);
+}
+
+static bool scroll_vassals(struct menu *menu, const struct realm_title_info *title, SDL_Point point)
+{
+    const int rows = lobby_rows(menu, LOBBY_VASSALS);
+    const int maximum = (int)realm_vassal_titles(&menu->realms, title, 0, NULL, 0) - rows;
+    if (maximum <= 0)
+        return false;
+    struct setup_widget parts[SETUP_SCROLL_PARTS];
+    setup_scrollbar(menu, LOBBY_VASSALS, (int)menu->vassal_scroll, maximum, parts);
+    int target = (int)menu->vassal_scroll;
+    if (SDL_PointInRect(&point, &parts[SETUP_SCROLL_UP].area))
+        --target;
+    else if (SDL_PointInRect(&point, &parts[SETUP_SCROLL_DOWN].area))
+        ++target;
+    else if (SDL_PointInRect(&point, &parts[SETUP_SCROLL_TRACK].area))
+        target = (point.y - parts[SETUP_SCROLL_TRACK].area.y) * maximum /
+                 SDL_max(1, parts[SETUP_SCROLL_TRACK].area.h - 1);
+    else
+        return false;
+    target = SDL_clamp(target, 0, maximum);
+    if (target != (int)menu->vassal_scroll) {
+        menu->vassal_scroll = (size_t)target;
+        refresh_vassal_art(menu, title);
+    }
+    return true;
 }
 
 static void select_setup_title(struct menu *menu, const struct realm_title_info *title,
                                unsigned province)
 {
-    const struct starting_era *era = &menu->era.eras[menu->era.selected];
     SDL_strlcpy(menu->setup_title, title->id, sizeof menu->setup_title);
     menu->setup_province = province ? province : title->capital;
     if (!menu->setup_province && title->id[0] == 'b') {
@@ -806,35 +1106,39 @@ static void select_setup_title(struct menu *menu, const struct realm_title_info 
             menu->setup_province = county.capital;
     }
     menu->vassal_scroll = 0;
-    menu->selected_holding = -1;
-    holdings_load(&menu->holdings, menu->asset_root, menu->setup_province, era->date);
-    preview_portrait(menu, realm_ruler(&menu->realms, title->holder));
+    preview_portrait(menu, title);
     menu_sound_play(&menu->music, CUE_COUNTRY);
+}
+
+static void select_setup_mode(struct menu *menu, SDL_Window *window, enum setup_control mode)
+{
+    if (mode == SETUP_REALMS && !menu->realms_visible)
+        menu->realms_visible = load_realms(menu, window, menu->era.eras[menu->era.selected].date);
+    else if (mode == SETUP_TERRAIN)
+        menu->realms_visible = false;
+    menu_sound_play(&menu->music, CUE_GENERIC);
 }
 
 static bool setup_select(struct menu *menu, SDL_Window *window, SDL_Point point)
 {
-    if (setup_deferred(point))
-        return true;
-    const int mode = setup_mode_at(point);
-    if (mode >= 0) {
-        const bool realms = mode == 1;
-        if (realms && !menu->realms_visible)
-            menu->realms_visible = load_realms(menu, window, menu->era.eras[menu->era.selected].date);
-        else if (!realms)
-            menu->realms_visible = false;
-        menu_sound_play(&menu->music, CUE_GENERIC);
+    const enum setup_control mode = setup_toolbar_hit(&menu->toolbar, point);
+    if (mode != SETUP_NO_CONTROL) {
+        if (mode <= SETUP_REALMS)
+            select_setup_mode(menu, window, mode);
         return true;
     }
-    for (int i = 0; i < menu->era.count; ++i) {
-        const SDL_Rect row = bookmark_area(i);
+    if (setup_lobby_deferred(&menu->toolbar, point))
+        return true;
+    for (int slot = 0; slot < lobby_rows(menu, LOBBY_BOOKMARKS) && slot + menu->bookmark_scroll < menu->era.count; ++slot) {
+        const int i = slot + menu->bookmark_scroll;
+        const SDL_Rect row = lobby_row(menu, LOBBY_BOOKMARKS, slot);
         if (SDL_PointInRect(&point, &row)) {
             if (i != menu->era.selected && load_realms(menu, window, menu->era.eras[i].date)) {
                 menu->era.selected = i;
                 menu->era.ruler = -1;
+                menu->featured_scroll = 0;
                 menu->setup_title[0] = 0;
                 menu->setup_province = 0;
-                menu->holdings = (struct county_holdings){0};
                 preview_portrait(menu, NULL);
             }
             menu_sound_play(&menu->music, CUE_BOOKMARK);
@@ -842,48 +1146,42 @@ static bool setup_select(struct menu *menu, SDL_Window *window, SDL_Point point)
         }
     }
     const struct starting_era *era = &menu->era.eras[menu->era.selected];
-    for (int i = 0; i < era->count; ++i) {
-        const SDL_Rect row = featured_area(i);
+    for (int slot = 0; slot < lobby_rows(menu, LOBBY_FEATURED) && slot + menu->featured_scroll < era->count; ++slot) {
+        const int i = slot + menu->featured_scroll;
+        const SDL_Rect row = lobby_row(menu, LOBBY_FEATURED, slot);
         if (SDL_PointInRect(&point, &row)) {
             struct realm_title_info title;
             menu->era.ruler = i;
-            if (realm_title_info(&menu->realms, era->rulers[i].title, &title))
+            if (realm_title_info(&menu->realms, era->rulers[i].title, &title) ||
+                realm_primary_title(&menu->realms, era->rulers[i].id, &title))
                 select_setup_title(menu, &title, 0);
             return true;
         }
     }
     struct realm_title_info inspected;
     if (inspected_title(menu, &inspected)) {
-        if (SDL_PointInRect(&point, &setup_liege)) {
+        if (scroll_vassals(menu, &inspected, point))
+            return true;
+        if (SDL_PointInRect(&point, &menu->toolbar.lobby[LOBBY_STATUS].area)) {
             struct realm_title_info liege;
             if (realm_title_info(&menu->realms, inspected.liege, &liege) && liege.holder)
                 select_setup_title(menu, &liege, 0);
             return true;
         }
-        struct realm_title_info vassals[VASSAL_ROWS];
-        const size_t total = realm_vassal_titles(&menu->realms, &inspected, menu->vassal_scroll,
-                                                 vassals, VASSAL_ROWS);
-        for (size_t i = 0; i < VASSAL_ROWS && menu->vassal_scroll + i < total; ++i) {
-            const SDL_Rect row = vassal_area((int)i);
+        const int rows = lobby_rows(menu, LOBBY_VASSALS);
+        for (int i = 0; i < rows; ++i) {
+            const SDL_Rect row = lobby_row(menu, LOBBY_VASSALS, i);
             if (SDL_PointInRect(&point, &row)) {
-                select_setup_title(menu, &vassals[i], 0);
-                return true;
-            }
-        }
-        for (size_t i = 0; i < menu->holdings.capacity; ++i) {
-            const SDL_Rect row = holding_area(i);
-            if (SDL_PointInRect(&point, &row)) {
-                struct realm_title_info holding;
-                if (i < menu->holdings.count &&
-                    realm_title_info(&menu->realms, menu->holdings.slots[i].id, &holding))
-                    select_setup_title(menu, &holding, menu->setup_province);
-                menu->selected_holding = (int)i;
+                struct realm_title_info vassal;
+                const size_t offset = menu->vassal_scroll + (size_t)i;
+                if (realm_vassal_titles(&menu->realms, &inspected, offset, &vassal, 1) > offset)
+                    select_setup_title(menu, &vassal, 0);
                 return true;
             }
         }
     }
-    if (SDL_PointInRect(&point, &setup_list) || SDL_PointInRect(&point, &setup_info) ||
-        (menu->holdings.capacity && SDL_PointInRect(&point, &setup_holdings)))
+    if (SDL_PointInRect(&point, &menu->toolbar.lobby[LOBBY_BOTTOM].area) ||
+        SDL_PointInRect(&point, &menu->toolbar.lobby[LOBBY_LEFT].area) || SDL_PointInRect(&point, &menu->toolbar.lobby[LOBBY_RIGHT].area))
         return true;
     SDL_Point world;
     if (map_view_pick(&menu->campaign_map, point.x, point.y, &world)) {
@@ -956,7 +1254,7 @@ static void draw(SDL_Renderer *renderer,
     }
 
     size_t count;
-    const struct button *buttons = buttons_for(menu->screen, &count);
+    const struct button *buttons = buttons_for(menu, &count);
     for (size_t i = 0; i < count; ++i) {
         const struct button *button = &buttons[i];
         const bool enabled = action_enabled(menu, button->action);
@@ -977,8 +1275,16 @@ static void draw(SDL_Renderer *renderer,
             label = date_label;
         }
 
-        SDL_SetTextureColorMod(texture, brightness, brightness, brightness);
-        SDL_RenderCopy(renderer, texture, NULL, &button->area);
+        if (menu->screen == MAP_SETUP) {
+            const enum lobby_element element = button->action == BACK ? LOBBY_BACK : LOBBY_PLAY;
+            const struct setup_widget *widget = &menu->toolbar.lobby[element];
+            SDL_SetTextureColorMod(widget->texture, brightness, brightness, brightness);
+            setup_widget_draw(widget, renderer, enabled ? menu->pointer : (SDL_Point){-1, -1});
+            SDL_SetTextureColorMod(widget->texture, 255, 255, 255);
+        } else {
+            SDL_SetTextureColorMod(texture, brightness, brightness, brightness);
+            SDL_RenderCopy(renderer, texture, NULL, &button->area);
+        }
         SDL_SetTextureAlphaMod(assets->font, enabled ? 255 : 150);
         centered_text(renderer, assets, label, strlen(label), button->area.x + button->area.w / 2,
                       button->area.y + (button->area.h - 22) / 2);
@@ -990,7 +1296,8 @@ static void draw(SDL_Renderer *renderer,
          (menu->hover == START_ERA && menu->era.selected >= 0 && !era_menu_can_start(&menu->era)))))
         settings_unavailable_tooltip(renderer, assets, centered_text, menu->pointer);
     if (menu->screen == MAP_SETUP) {
-        if (setup_deferred(menu->pointer))
+        if (setup_toolbar_hit(&menu->toolbar, menu->pointer) >= SETUP_COUNTIES ||
+            setup_lobby_deferred(&menu->toolbar, menu->pointer))
             settings_unavailable_tooltip(renderer, assets, centered_text, menu->pointer);
         else
             setup_tooltip(renderer, assets, menu);
@@ -998,10 +1305,10 @@ static void draw(SDL_Renderer *renderer,
     SDL_RenderPresent(renderer);
 }
 
-static enum action hit_test(enum screen screen, int x, int y)
+static enum action hit_test(const struct menu *menu, int x, int y)
 {
     size_t count;
-    const struct button *buttons = buttons_for(screen, &count);
+    const struct button *buttons = buttons_for(menu, &count);
     const SDL_Point point = {x, y};
     for (size_t i = 0; i < count; ++i) {
         if (SDL_PointInRect(&point, &buttons[i].area))
@@ -1049,8 +1356,9 @@ static void activate(struct menu *menu, SDL_Window *window, enum action action)
         if (menu->screen == MAP_SETUP) {
             menu->setup_province = 0;
             menu->setup_title[0] = 0;
-            menu->holdings = (struct county_holdings){0};
             preview_portrait(menu, NULL);
+            if (!menu->era.eras[menu->era.selected].card)
+                menu->era.selected = menu->era.ruler = -1;
             menu->screen = STARTING_ERA;
             menu->focus = CUSTOM_SETUP;
             break;
@@ -1086,9 +1394,9 @@ static void activate(struct menu *menu, SDL_Window *window, enum action action)
             break;
         }
         menu->era.selected = menu->era.ruler = -1;
+        menu->bookmark_scroll = menu->featured_scroll = 0;
         menu->setup_province = 0;
         menu->setup_title[0] = 0;
-        menu->holdings = (struct county_holdings){0};
         menu->pointer = (SDL_Point){-1, -1};
         menu->screen = STARTING_ERA;
         menu->focus = BACK;
@@ -1096,10 +1404,21 @@ static void activate(struct menu *menu, SDL_Window *window, enum action action)
     case START_ERA:
     case CUSTOM_SETUP: {
         const struct starting_era *era = &menu->era.eras[menu->era.selected];
+        if (action == CUSTOM_SETUP && !menu->toolbar.widgets[SETUP_BANNER].texture &&
+            setup_lobby_load(&menu->toolbar, menu->renderer, menu->asset_root, (SDL_Point){WIDTH, HEIGHT}) < 0) {
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Custom Game Setup", SDL_GetError(), window);
+            break;
+        }
         if (!load_realms(menu, window, era->date))
             break;
         menu->realms_visible = true;
         if (action == CUSTOM_SETUP) {
+            menu->bookmark_scroll = SDL_clamp(menu->era.selected - lobby_rows(menu, LOBBY_BOOKMARKS) + 1,
+                0, SDL_max(0, menu->era.count - lobby_rows(menu, LOBBY_BOOKMARKS)));
+            menu->setup_buttons[0] = (struct button){menu->toolbar.lobby[LOBBY_BACK].area,
+                                                     menu->toolbar.back_label, BACK};
+            menu->setup_buttons[1] = (struct button){menu->toolbar.lobby[LOBBY_PLAY].area,
+                                                     menu->toolbar.play_label, START_ERA};
             if (menu->era.ruler >= 0) {
                 struct realm_title_info title;
                 if (realm_title_info(&menu->realms, era->rulers[menu->era.ruler].title, &title))
@@ -1167,7 +1486,7 @@ static void activate(struct menu *menu, SDL_Window *window, enum action action)
 static void move_focus(struct menu *menu, int direction)
 {
     size_t count;
-    const struct button *buttons = buttons_for(menu->screen, &count);
+    const struct button *buttons = buttons_for(menu, &count);
     int current = direction > 0 ? (int)count - 1 : 0;
     for (size_t i = 0; i < count; ++i) {
         if (action_enabled(menu, buttons[i].action) && buttons[i].action == menu->focus)
@@ -1184,8 +1503,71 @@ static void scroll_credits(struct menu *menu, int amount)
     menu->credit_scroll = SDL_clamp(menu->credit_scroll + amount, 0, menu->credit_scroll_max);
 }
 
+static void move_setup_thumb(struct menu *menu, int pointer_y)
+{
+    const enum lobby_element list = menu->scroll_list;
+    const int count = list == LOBBY_BOOKMARKS ? menu->era.count : menu->era.eras[menu->era.selected].count;
+    int *scroll = list == LOBBY_BOOKMARKS ? &menu->bookmark_scroll : &menu->featured_scroll;
+    const int maximum = count - lobby_rows(menu, list);
+    if (maximum <= 0)
+        return;
+    struct setup_widget parts[SETUP_SCROLL_PARTS];
+    setup_scrollbar(menu, list, *scroll, maximum, parts);
+    const SDL_Rect track = parts[SETUP_SCROLL_TRACK].area;
+    const int travel = SDL_max(1, track.h - parts[SETUP_SCROLL_THUMB].area.h);
+    const int offset = SDL_clamp(pointer_y - menu->bookmark_drag_offset - track.y, 0, travel);
+    *scroll = (offset * maximum + travel / 2) / travel;
+}
+
+static bool press_setup_scrollbar(struct menu *menu, enum lobby_element list, SDL_Point point)
+{
+    const int count = list == LOBBY_BOOKMARKS ? menu->era.count : menu->era.eras[menu->era.selected].count;
+    int *scroll = list == LOBBY_BOOKMARKS ? &menu->bookmark_scroll : &menu->featured_scroll;
+    const int maximum = count - lobby_rows(menu, list);
+    if (maximum <= 0)
+        return false;
+    struct setup_widget parts[SETUP_SCROLL_PARTS];
+    setup_scrollbar(menu, list, *scroll, maximum, parts);
+    if (SDL_PointInRect(&point, &parts[SETUP_SCROLL_UP].area))
+        *scroll = SDL_max(0, *scroll - 1);
+    else if (SDL_PointInRect(&point, &parts[SETUP_SCROLL_DOWN].area))
+        *scroll = SDL_min(maximum, *scroll + 1);
+    else if (SDL_PointInRect(&point, &parts[SETUP_SCROLL_THUMB].area)) {
+        menu->bookmark_drag_offset = point.y - parts[SETUP_SCROLL_THUMB].area.y;
+        menu->scroll_list = list;
+        menu->bookmark_drag = true;
+    } else if (SDL_PointInRect(&point, &parts[SETUP_SCROLL_TRACK].area)) {
+        menu->bookmark_drag_offset = parts[SETUP_SCROLL_THUMB].area.h / 2;
+        menu->scroll_list = list;
+        move_setup_thumb(menu, point.y);
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static SDL_Cursor *load_game_cursor(const char *root)
+{
+    char *path = ck2_asset_path(root, "gfx/cursors/normal.png");
+    SDL_Surface *art = path ? IMG_Load(path) : NULL;
+    free(path);
+    if (!art)
+        return NULL;
+    SDL_Cursor *cursor = SDL_CreateColorCursor(art, 0, 0);
+    SDL_FreeSurface(art);
+    return cursor;
+}
+
 static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event *event)
 {
+    if (event->type == SDL_WINDOWEVENT && menu->game_cursor) {
+        if (event->window.event == SDL_WINDOWEVENT_ENTER ||
+            (event->window.event == SDL_WINDOWEVENT_FOCUS_GAINED && SDL_GetMouseFocus() == window))
+            SDL_SetCursor(menu->game_cursor);
+        else if (event->window.event == SDL_WINDOWEVENT_LEAVE ||
+                 event->window.event == SDL_WINDOWEVENT_FOCUS_LOST)
+            SDL_SetCursor(SDL_GetDefaultCursor());
+    }
     if (menu->screen == OPTIONS && event->type != SDL_QUIT) {
         if (settings_event(&menu->settings, window, &menu->music, event))
             activate(menu, window, BACK);
@@ -1197,18 +1579,28 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
         menu->running = false;
         break;
     case SDL_MOUSEMOTION:
+        if (menu->screen == MAP_SETUP && menu->bookmark_drag)
+            move_setup_thumb(menu, event->motion.y);
         menu->pointer = (SDL_Point){event->motion.x, event->motion.y};
-        menu->hover = hit_test(menu->screen, event->motion.x, event->motion.y);
+        menu->hover = hit_test(menu, event->motion.x, event->motion.y);
         break;
     case SDL_WINDOWEVENT:
-        if (event->window.event == SDL_WINDOWEVENT_FOCUS_LOST)
+        if (event->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
             menu->drag_button = 0;
+            menu->bookmark_drag = menu->bookmark_scroll_pressed = false;
+        }
         if (event->window.event == SDL_WINDOWEVENT_LEAVE) {
             menu->hover = UNAVAILABLE;
             menu->pointer = (SDL_Point){-1, -1};
         }
         break;
     case SDL_MOUSEBUTTONDOWN:
+        if (menu->screen == MAP_SETUP && event->button.button == SDL_BUTTON_LEFT &&
+            (press_setup_scrollbar(menu, LOBBY_BOOKMARKS, (SDL_Point){event->button.x, event->button.y}) ||
+             press_setup_scrollbar(menu, LOBBY_FEATURED, (SDL_Point){event->button.x, event->button.y}))) {
+            menu->bookmark_scroll_pressed = true;
+            break;
+        }
         if (navigable(menu->screen) && (event->button.button == SDL_BUTTON_MIDDLE ||
                                         event->button.button == SDL_BUTTON_RIGHT)) {
             menu->drag_start = (SDL_Point){event->button.x, event->button.y};
@@ -1216,6 +1608,10 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
         }
         break;
     case SDL_MOUSEBUTTONUP:
+        if (event->button.button == SDL_BUTTON_LEFT && menu->bookmark_scroll_pressed) {
+            menu->bookmark_drag = menu->bookmark_scroll_pressed = false;
+            break;
+        }
         if (menu->drag_button && menu->drag_button == event->button.button) {
             menu->drag_button = 0;
             if (navigable(menu->screen))
@@ -1243,7 +1639,7 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
                 menu_sound_play(&menu->music, CUE_GENERIC);
                 break;
             }
-            const enum action action = hit_test(menu->screen, x, y);
+            const enum action action = hit_test(menu, x, y);
             if (menu->screen == MAP_SETUP && action == UNAVAILABLE &&
                 setup_select(menu, window, (SDL_Point){x, y}))
                 break;
@@ -1265,12 +1661,30 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
     case SDL_MOUSEWHEEL:
         if (navigable(menu->screen)) {
             const int delta = SDL_clamp(event->wheel.y, -6, 6);
-            if (menu->screen == MAP_SETUP && SDL_PointInRect(&menu->pointer, &setup_info)) {
+            const int scroll = event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -delta : delta;
+            if (menu->screen == MAP_SETUP &&
+                SDL_PointInRect(&menu->pointer, &menu->toolbar.lobby[LOBBY_BOOKMARKS].area)) {
+                const int max = SDL_max(0, menu->era.count - lobby_rows(menu, LOBBY_BOOKMARKS));
+                menu->bookmark_scroll = SDL_clamp(menu->bookmark_scroll - scroll, 0, max);
+                break;
+            }
+            if (menu->screen == MAP_SETUP &&
+                SDL_PointInRect(&menu->pointer, &menu->toolbar.lobby[LOBBY_FEATURED].area)) {
+                const int count = menu->era.eras[menu->era.selected].count;
+                const int max = SDL_max(0, count - lobby_rows(menu, LOBBY_FEATURED));
+                menu->featured_scroll = SDL_clamp(menu->featured_scroll - scroll, 0, max);
+                break;
+            }
+            if (menu->screen == MAP_SETUP && SDL_PointInRect(&menu->pointer, &menu->toolbar.lobby[LOBBY_RIGHT].area)) {
                 struct realm_title_info title;
                 if (inspected_title(menu, &title)) {
                     const size_t count = realm_vassal_titles(&menu->realms, &title, 0, NULL, 0);
-                    const int max = count > VASSAL_ROWS ? (int)(count - VASSAL_ROWS) : 0;
-                    menu->vassal_scroll = (size_t)SDL_clamp((int)menu->vassal_scroll - delta, 0, max);
+                    const int max = SDL_max(0, (int)count - lobby_rows(menu, LOBBY_VASSALS));
+                    const size_t target = (size_t)SDL_clamp((int)menu->vassal_scroll - scroll, 0, max);
+                    if (target != menu->vassal_scroll) {
+                        menu->vassal_scroll = target;
+                        refresh_vassal_art(menu, &title);
+                    }
                 }
                 break;
             }
@@ -1290,6 +1704,13 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
         }
         break;
     case SDL_KEYDOWN:
+        if (menu->screen == MAP_SETUP && !event->key.repeat) {
+            const enum setup_control mode = setup_toolbar_shortcut(&menu->toolbar, event->key.keysym.sym);
+            if (mode != SETUP_NO_CONTROL) {
+                select_setup_mode(menu, window, mode);
+                break;
+            }
+        }
         switch (event->key.keysym.sym) {
         case SDLK_ESCAPE:
             if (!event->key.repeat)
@@ -1323,9 +1744,7 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
             }
             if (menu->screen == STARTING_ERA) {
                 const int delta = event->key.keysym.sym == SDLK_LEFT ? -1 : 1;
-                const int count = menu->era.count + 1;
-                menu->era.selected = (menu->era.selected + 1 + delta + count) % count - 1;
-                menu->era.ruler = -1;
+                era_menu_step_card(&menu->era, delta);
                 menu_sound_play(&menu->music, CUE_BOOKMARK);
                 menu->focus = era_menu_can_start(&menu->era) ? START_ERA : BACK;
             }
@@ -1342,7 +1761,7 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
             }
             break;
         case SDLK_w:
-            if (!event->key.repeat && (menu->screen == CAMPAIGN || menu->screen == MAP_SETUP))
+            if (!event->key.repeat && menu->screen == CAMPAIGN)
                 activate(menu, window, TOGGLE_REALMS);
             break;
         case SDLK_PAGEUP:
@@ -1384,6 +1803,7 @@ static int run_game(const char *root)
     ck2_mount_content(root, &menu.catalog);
     if (!renderer || SDL_RenderSetLogicalSize(renderer, WIDTH, HEIGHT) < 0 ||
         menu_assets_load(&assets, renderer, root) < 0 ||
+        load_main_button_layout(&menu, &assets) < 0 ||
         settings_load(&menu.settings, renderer, root) < 0 ||
         map_view_build(&menu.menu_map, renderer, root, WIDTH, HEIGHT, false) < 0) {
         fprintf(stderr, "Could not load the CK2 main menu: %s\n", SDL_GetError());
@@ -1396,7 +1816,10 @@ static int run_game(const char *root)
     for (const char *p = assets.credits; *p; ++p)
         lines += *p == '\n';
     menu.credit_scroll_max = SDL_max(0, lines * CREDIT_LINE - 535);
+    menu.game_cursor = load_game_cursor(root);
     SDL_ShowWindow(window);
+    if (menu.game_cursor && SDL_GetMouseFocus() == window)
+        SDL_SetCursor(menu.game_cursor);
     draw(renderer, &assets, &menu);
 
     SDL_Event event;
@@ -1425,6 +1848,10 @@ static int run_game(const char *root)
         status = EXIT_SUCCESS;
 
 cleanup:
+    if (menu.game_cursor) {
+        SDL_SetCursor(SDL_GetDefaultCursor());
+        SDL_FreeCursor(menu.game_cursor);
+    }
     if (menu.province_overlay)
         SDL_DestroyTexture(menu.province_overlay);
     map_view_free(&menu.menu_map);
@@ -1434,14 +1861,14 @@ cleanup:
     free(menu.selection_path);
     menu_sound_finish(&menu.music);
     menu_music_stop(&menu.music);
-    if (menu.setup_portrait)
-        SDL_DestroyTexture(menu.setup_portrait);
+    preview_portrait(&menu, NULL);
     if (menu.campaign_portrait)
         SDL_DestroyTexture(menu.campaign_portrait);
     portraits_close(&menu.portrait_source);
     rules_free(&menu.rules);
     realm_map_free(&menu.realms);
     era_menu_free(&menu.era);
+    setup_toolbar_free(&menu.toolbar);
     settings_free(&menu.settings);
     menu_assets_free(&assets);
     if (renderer)
