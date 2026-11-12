@@ -1,0 +1,1067 @@
+{
+  "sha256": "a0cc8e92287ac900b0552f5cca20df5acedf4773244923a77b15bcdbe143b13d",
+  "image_base": "0x140000000",
+  "strings": {
+    "0x140fadd38": "ERROR_BAD_INHERITANCE_ACL",
+    "0x140fae308": "ERROR_NO_INHERITANCE",
+    "0x140fbe1d8": "WBEM_E_CANNOT_CHANGE_KEY_INHERITANCE",
+    "0x140fbe200": "WBEM_E_CANNOT_CHANGE_INDEX_INHERITANCE",
+    "0x140ff9318": "matrilineal_marriages",
+    "0x1410055c0": "D:\\jenkins\\workspace\\ck2\\ck2\\source\\bloodline.cpp",
+    "0x1410055f8": "Invalid inheritance type in Bloodlines ",
+    "0x141009718": "TRIBUTARY_TRANSFER_INHERITANCE",
+    "0x14100b920": "Adding matrilineal spouse that has not been born yet. ID:",
+    "0x141010898": "FAVOR_NOT_MATRILINEAL",
+    "0x141010a00": "MATRILINEAL_MARRIAGE_CONCLAVE",
+    "0x141019e68": "matrilineal",
+    "0x141019e88": "matrilineal_bg",
+    "0x141019e98": "matrilineal_text",
+    "0x14101ec90": "INHERITANCE_LOST_ARTIFACTS",
+    "0x14101ecb0": "INHERITANCE_LOST_ARTIFACTS_MULTIPLE",
+    "0x14101ece8": "on_artifact_inheritance",
+    "0x141025870": "set_government",
+    "0x1410258f0": "validate_government",
+    "0x14102e430": "INHERITANCE_CHANGE_VALUE",
+    "0x14102ff48": "PATRICIAN_INHERITANCE_FROM_RELATIVE_MULT",
+    "0x141036e18": "common/governments",
+    "0x1410370d0": "common/bloodlines",
+    "0x141038ea0": "BLOODLINE_NO_BASTARDS_INHERITANCE",
+    "0x141038ef8": "BLOODLINE_MATRILINEAL_INVERSION",
+    "0x141038f18": "BLOODLINE_MATRILINEAL_INVERSION_DELAYED",
+    "0x141038f40": "BLOODLINE_MATRILINEAL_INHERITANCE",
+    "0x141038f68": "BLOODLINE_MATRILINEAL_INHERITANCE_DELAYED",
+    "0x141038f98": "BLOODLINE_PATRILINEAL_INHERITANCE",
+    "0x141038fc0": "BLOODLINE_PATRILINEAL_INHERITANCE_DELAYED",
+    "0x141039160": "BLOODLINE_NO_BASTARDS_INHERITANCE_DELAYED",
+    "0x141039450": "bloodlines_window",
+    "0x14103a090": "government_icon",
+    "0x141051ce8": "PROTECTED_INHERITANCE_OFF",
+    "0x141051d08": "PROTECTED_INHERITANCE_ON",
+    "0x141051d30": "Scope.GetLandedTitle()->IsValid() && \"Wrong Scope in effect CSetProtectedInheritance\"",
+    "0x1410521f0": "ALLOW_MATRILINEAL_MARRIAGE_ON",
+    "0x141052210": "Scope.GetLandedTitle()->IsValid() && \"Wrong Scope in effect CSetAllowMatrilinealMarriage\"",
+    "0x1410540c0": "set_government_type",
+    "0x141057078": "!\"Unknown inheritance type in create_bloodline effect\"",
+    "0x141058690": "SET_NOT_MATRILINEAL_MARRIAGE_EFFECT",
+    "0x1410586b8": "SET_MATRILINEAL_MARRIAGE_EFFECT",
+    "0x14105be98": "laws_inheritance_bg",
+    "0x14105c968": "charselect_matrilineal_bg",
+    "0x14106ae50": "inheritance",
+    "0x14106b4a0": "D:\\jenkins\\workspace\\ck2\\ck2\\source\\government.cpp",
+    "0x14106bf58": "D:\\jenkins\\workspace\\ck2\\ck2\\source\\governmentflavor.cpp",
+    "0x14106ca30": "INHERITANCE_INFAMY",
+    "0x14106ea08": "tab_inheritance",
+    "0x14106eb00": "inheritance_view",
+    "0x14106fa48": "LEDGER_POSSIBLE_INHERITANCES",
+    "0x14108bc48": "society_bloodlines_window",
+    "0x14108e2b8": "ACQUISITION_INHERITANCE",
+    "0x14108e8f8": "on_new_holder_inheritance",
+    "0x14109a658": "set_protected_inheritance",
+    "0x14109c148": "add_spouse_matrilineal",
+    "0x14109cee0": "add_matrilineal_spouse",
+    "0x14109cef8": "is_married_matrilineally",
+    "0x14109f500": "allows_matrilineal_marriage",
+    "0x1410a2038": "set_allows_matrilineal_marriage",
+    "0x1410a2c00": "landed_inheritance",
+    "0x1410a2d48": "has_inheritance_blocker",
+    "0x1410a55c0": "patrilineal",
+    "0x1410a5df8": "no_inheritance",
+    "0x1410a6b90": "matrilineal_override",
+    "0x1410a8da0": "law_set_allow_matrilineal_marriage",
+    "0x1410cbb40": "false && \"CHasInheritanceBlockingTraitTrigger has wrong Scope\"",
+    "0x1410cbb98": "HAS_INHERITANCE_BLOCKER",
+    "0x1410cbbb0": "HAS_NOT_INHERITANCE_BLOCKER"
+  },
+  "refs": [
+    {
+      "string": "set_protected_inheritance",
+      "string_va": "0x14109a658",
+      "xref": "0x14008b482",
+      "instruction": "lea r8, [rip + 0x100f1cf]",
+      "function": [
+        "0x14007e3f0",
+        "0x14009c72a"
+      ]
+    },
+    {
+      "string": "matrilineal",
+      "string_va": "0x141019e68",
+      "xref": "0x14008c412",
+      "instruction": "lea r8, [rip + 0xf8da4f]",
+      "function": [
+        "0x14007e3f0",
+        "0x14009c72a"
+      ]
+    },
+    {
+      "string": "add_spouse_matrilineal",
+      "string_va": "0x14109c148",
+      "xref": "0x14008ceda",
+      "instruction": "lea r8, [rip + 0x100f267]",
+      "function": [
+        "0x14007e3f0",
+        "0x14009c72a"
+      ]
+    },
+    {
+      "string": "matrilineal_marriages",
+      "string_va": "0x140ff9318",
+      "xref": "0x14008e6c2",
+      "instruction": "lea r8, [rip + 0xf6ac4f]",
+      "function": [
+        "0x14007e3f0",
+        "0x14009c72a"
+      ]
+    },
+    {
+      "string": "add_matrilineal_spouse",
+      "string_va": "0x14109cee0",
+      "xref": "0x14008e70a",
+      "instruction": "lea r8, [rip + 0x100e7cf]",
+      "function": [
+        "0x14007e3f0",
+        "0x14009c72a"
+      ]
+    },
+    {
+      "string": "is_married_matrilineally",
+      "string_va": "0x14109cef8",
+      "xref": "0x14008e722",
+      "instruction": "lea r8, [rip + 0x100e7cf]",
+      "function": [
+        "0x14007e3f0",
+        "0x14009c72a"
+      ]
+    },
+    {
+      "string": "inheritance",
+      "string_va": "0x14106ae50",
+      "xref": "0x14008f682",
+      "instruction": "lea r8, [rip + 0xfdb7c7]",
+      "function": [
+        "0x14007e3f0",
+        "0x14009c72a"
+      ]
+    },
+    {
+      "string": "set_government_type",
+      "string_va": "0x1410540c0",
+      "xref": "0x1400905ca",
+      "instruction": "lea r8, [rip + 0xfc3aef]",
+      "function": [
+        "0x14007e3f0",
+        "0x14009c72a"
+      ]
+    },
+    {
+      "string": "allows_matrilineal_marriage",
+      "string_va": "0x14109f500",
+      "xref": "0x1400914e2",
+      "instruction": "lea r8, [rip + 0x100e017]",
+      "function": [
+        "0x14007e3f0",
+        "0x14009c72a"
+      ]
+    },
+    {
+      "string": "set_allows_matrilineal_marriage",
+      "string_va": "0x1410a2038",
+      "xref": "0x140093d62",
+      "instruction": "lea r8, [rip + 0x100e2cf]",
+      "function": [
+        "0x14007e3f0",
+        "0x14009c72a"
+      ]
+    },
+    {
+      "string": "has_inheritance_blocker",
+      "string_va": "0x1410a2d48",
+      "xref": "0x140094e72",
+      "instruction": "lea r8, [rip + 0x100decf]",
+      "function": [
+        "0x14007e3f0",
+        "0x14009c72a"
+      ]
+    },
+    {
+      "string": "landed_inheritance",
+      "string_va": "0x1410a2c00",
+      "xref": "0x1400952f2",
+      "instruction": "lea r8, [rip + 0x100d907]",
+      "function": [
+        "0x14007e3f0",
+        "0x14009c72a"
+      ]
+    },
+    {
+      "string": "patrilineal",
+      "string_va": "0x1410a55c0",
+      "xref": "0x1400983fa",
+      "instruction": "lea r8, [rip + 0x100d1bf]",
+      "function": [
+        "0x14007e3f0",
+        "0x14009c72a"
+      ]
+    },
+    {
+      "string": "no_inheritance",
+      "string_va": "0x1410a5df8",
+      "xref": "0x140098652",
+      "instruction": "lea r8, [rip + 0x100d79f]",
+      "function": [
+        "0x14007e3f0",
+        "0x14009c72a"
+      ]
+    },
+    {
+      "string": "matrilineal_override",
+      "string_va": "0x1410a6b90",
+      "xref": "0x140099b76",
+      "instruction": "lea r8, [rip + 0x100d013]",
+      "function": [
+        "0x14007e3f0",
+        "0x14009c72a"
+      ]
+    },
+    {
+      "string": "law_set_allow_matrilineal_marriage",
+      "string_va": "0x1410a8da0",
+      "xref": "0x14009bd66",
+      "instruction": "lea r8, [rip + 0x100d033]",
+      "function": [
+        "0x14007e3f0",
+        "0x14009c72a"
+      ]
+    },
+    {
+      "string": "matrilineal_marriages",
+      "string_va": "0x140ff9318",
+      "xref": "0x14010efc2",
+      "instruction": "lea rdx, [rip + 0xeea34f]",
+      "function": [
+        "0x14010e290",
+        "0x1401101c0"
+      ]
+    },
+    {
+      "string": "D:\\jenkins\\workspace\\ck2\\ck2\\source\\bloodline.cpp",
+      "string_va": "0x1410055c0",
+      "xref": "0x140181f69",
+      "instruction": "lea rdx, [rip + 0xe83650]",
+      "function": [
+        "0x140181b40",
+        "0x140182090"
+      ]
+    },
+    {
+      "string": "Invalid inheritance type in Bloodlines ",
+      "string_va": "0x1410055f8",
+      "xref": "0x140181f82",
+      "instruction": "lea rdx, [rip + 0xe8366f]",
+      "function": [
+        "0x140181b40",
+        "0x140182090"
+      ]
+    },
+    {
+      "string": "D:\\jenkins\\workspace\\ck2\\ck2\\source\\bloodline.cpp",
+      "string_va": "0x1410055c0",
+      "xref": "0x140183580",
+      "instruction": "lea rdx, [rip + 0xe82039]",
+      "function": [
+        "0x1401834a0",
+        "0x1401839fd"
+      ]
+    },
+    {
+      "string": "D:\\jenkins\\workspace\\ck2\\ck2\\source\\bloodline.cpp",
+      "string_va": "0x1410055c0",
+      "xref": "0x140183744",
+      "instruction": "lea rdx, [rip + 0xe81e75]",
+      "function": [
+        "0x1401834a0",
+        "0x1401839fd"
+      ]
+    },
+    {
+      "string": "Invalid inheritance type in Bloodlines ",
+      "string_va": "0x1410055f8",
+      "xref": "0x14018375e",
+      "instruction": "lea rdx, [rip + 0xe81e93]",
+      "function": [
+        "0x1401834a0",
+        "0x1401839fd"
+      ]
+    },
+    {
+      "string": "D:\\jenkins\\workspace\\ck2\\ck2\\source\\bloodline.cpp",
+      "string_va": "0x1410055c0",
+      "xref": "0x1401838d5",
+      "instruction": "lea rdx, [rip + 0xe81ce4]",
+      "function": [
+        "0x1401834a0",
+        "0x1401839fd"
+      ]
+    },
+    {
+      "string": "TRIBUTARY_TRANSFER_INHERITANCE",
+      "string_va": "0x141009718",
+      "xref": "0x140222ec3",
+      "instruction": "lea rdx, [rip + 0xde684e]",
+      "function": [
+        "0x140222900",
+        "0x1402240c2"
+      ]
+    },
+    {
+      "string": "TRIBUTARY_TRANSFER_INHERITANCE",
+      "string_va": "0x141009718",
+      "xref": "0x140223fa4",
+      "instruction": "lea rdx, [rip + 0xde576d]",
+      "function": [
+        "0x140222900",
+        "0x1402240c2"
+      ]
+    },
+    {
+      "string": "Adding matrilineal spouse that has not been born yet. ID:",
+      "string_va": "0x14100b920",
+      "xref": "0x140291492",
+      "instruction": "lea rdx, [rip + 0xd7a487]",
+      "function": [
+        "0x1402912e0",
+        "0x1402916fa"
+      ]
+    },
+    {
+      "string": "FAVOR_NOT_MATRILINEAL",
+      "string_va": "0x141010898",
+      "xref": "0x1402c462c",
+      "instruction": "lea rdx, [rip + 0xd4c265]",
+      "function": [
+        "0x1402c44a0",
+        "0x1402c4a0d"
+      ]
+    },
+    {
+      "string": "MATRILINEAL_MARRIAGE_CONCLAVE",
+      "string_va": "0x141010a00",
+      "xref": "0x1402c4e3c",
+      "instruction": "lea rdx, [rip + 0xd4bbbd]",
+      "function": [
+        "0x1402c4a10",
+        "0x1402c54e0"
+      ]
+    },
+    {
+      "string": "MATRILINEAL_MARRIAGE_CONCLAVE",
+      "string_va": "0x141010a00",
+      "xref": "0x1402cbca0",
+      "instruction": "lea rdx, [rip + 0xd44d59]",
+      "function": [
+        "0x1402cb1f0",
+        "0x1402cc498"
+      ]
+    },
+    {
+      "string": "FAVOR_NOT_MATRILINEAL",
+      "string_va": "0x141010898",
+      "xref": "0x1402cecac",
+      "instruction": "lea rdx, [rip + 0xd41be5]",
+      "function": [
+        "0x1402ceb20",
+        "0x1402cf08d"
+      ]
+    },
+    {
+      "string": "matrilineal_bg",
+      "string_va": "0x141019e88",
+      "xref": "0x1403129bb",
+      "instruction": "lea rdx, [rip + 0xd074c6]",
+      "function": [
+        "0x1403113e0",
+        "0x140312c53"
+      ]
+    },
+    {
+      "string": "matrilineal_text",
+      "string_va": "0x141019e98",
+      "xref": "0x140312a4a",
+      "instruction": "lea rdx, [rip + 0xd07447]",
+      "function": [
+        "0x1403113e0",
+        "0x140312c53"
+      ]
+    },
+    {
+      "string": "matrilineal",
+      "string_va": "0x141019e68",
+      "xref": "0x140312ad5",
+      "instruction": "lea rdx, [rip + 0xd0738c]",
+      "function": [
+        "0x1403113e0",
+        "0x140312c53"
+      ]
+    },
+    {
+      "string": "matrilineal",
+      "string_va": "0x141019e68",
+      "xref": "0x1403132d1",
+      "instruction": "lea rdx, [rip + 0xd06b90]",
+      "function": [
+        "0x140312cf0",
+        "0x140313662"
+      ]
+    },
+    {
+      "string": "matrilineal",
+      "string_va": "0x141019e68",
+      "xref": "0x140313d96",
+      "instruction": "lea rdx, [rip + 0xd060cb]",
+      "function": [
+        "0x1403137b0",
+        "0x1403142b2"
+      ]
+    },
+    {
+      "string": "matrilineal",
+      "string_va": "0x141019e68",
+      "xref": "0x140318dd0",
+      "instruction": "lea rdx, [rip + 0xd01091]",
+      "function": [
+        "0x140318850",
+        "0x140319439"
+      ]
+    },
+    {
+      "string": "matrilineal_text",
+      "string_va": "0x141019e98",
+      "xref": "0x140318dfd",
+      "instruction": "lea rdx, [rip + 0xd01094]",
+      "function": [
+        "0x140318850",
+        "0x140319439"
+      ]
+    },
+    {
+      "string": "matrilineal_bg",
+      "string_va": "0x141019e88",
+      "xref": "0x140320a73",
+      "instruction": "lea rdx, [rip + 0xcf940e]",
+      "function": [
+        "0x140320850",
+        "0x140320f51"
+      ]
+    },
+    {
+      "string": "matrilineal_text",
+      "string_va": "0x141019e98",
+      "xref": "0x140320b13",
+      "instruction": "lea rdx, [rip + 0xcf937e]",
+      "function": [
+        "0x140320850",
+        "0x140320f51"
+      ]
+    },
+    {
+      "string": "matrilineal_text",
+      "string_va": "0x141019e98",
+      "xref": "0x140320b8e",
+      "instruction": "lea rdx, [rip + 0xcf9303]",
+      "function": [
+        "0x140320850",
+        "0x140320f51"
+      ]
+    },
+    {
+      "string": "matrilineal",
+      "string_va": "0x141019e68",
+      "xref": "0x140320bfb",
+      "instruction": "lea rdx, [rip + 0xcf9266]",
+      "function": [
+        "0x140320850",
+        "0x140320f51"
+      ]
+    },
+    {
+      "string": "matrilineal",
+      "string_va": "0x141019e68",
+      "xref": "0x140320c47",
+      "instruction": "lea rdx, [rip + 0xcf921a]",
+      "function": [
+        "0x140320850",
+        "0x140320f51"
+      ]
+    },
+    {
+      "string": "matrilineal",
+      "string_va": "0x141019e68",
+      "xref": "0x1403219f7",
+      "instruction": "lea rdx, [rip + 0xcf846a]",
+      "function": [
+        "0x1403219b0",
+        "0x140321ab3"
+      ]
+    },
+    {
+      "string": "on_artifact_inheritance",
+      "string_va": "0x14101ece8",
+      "xref": "0x14037b2c1",
+      "instruction": "lea rdx, [rip + 0xca3a20]",
+      "function": [
+        "0x14037a920",
+        "0x14037bd16"
+      ]
+    },
+    {
+      "string": "INHERITANCE_LOST_ARTIFACTS_MULTIPLE",
+      "string_va": "0x14101ecb0",
+      "xref": "0x14037b831",
+      "instruction": "lea rax, [rip + 0xca3478]",
+      "function": [
+        "0x14037a920",
+        "0x14037bd16"
+      ]
+    },
+    {
+      "string": "INHERITANCE_LOST_ARTIFACTS",
+      "string_va": "0x14101ec90",
+      "xref": "0x14037b838",
+      "instruction": "lea rdx, [rip + 0xca3451]",
+      "function": [
+        "0x14037a920",
+        "0x14037bd16"
+      ]
+    },
+    {
+      "string": "INHERITANCE_CHANGE_VALUE",
+      "string_va": "0x14102e430",
+      "xref": "0x14047b075",
+      "instruction": "lea rdx, [rip + 0xbb33b4]",
+      "function": [
+        "0x140475990",
+        "0x14048cfec"
+      ]
+    },
+    {
+      "string": "PATRICIAN_INHERITANCE_FROM_RELATIVE_MULT",
+      "string_va": "0x14102ff48",
+      "xref": "0x14047fa15",
+      "instruction": "lea rdx, [rip + 0xbb052c]",
+      "function": [
+        "0x140475990",
+        "0x14048cfec"
+      ]
+    },
+    {
+      "string": "matrilineal",
+      "string_va": "0x141019e68",
+      "xref": "0x1404c7343",
+      "instruction": "lea rdx, [rip + 0xb52b1e]",
+      "function": [
+        "0x1404c67d0",
+        "0x1404c7882"
+      ]
+    },
+    {
+      "string": "matrilineal",
+      "string_va": "0x141019e68",
+      "xref": "0x1404c9b6e",
+      "instruction": "lea rdx, [rip + 0xb502f3]",
+      "function": [
+        "0x1404c9ae0",
+        "0x1404c9c9c"
+      ]
+    },
+    {
+      "string": "matrilineal_text",
+      "string_va": "0x141019e98",
+      "xref": "0x1404cdb53",
+      "instruction": "lea rdx, [rip + 0xb4c33e]",
+      "function": [
+        "0x1404cd580",
+        "0x1404cde54"
+      ]
+    },
+    {
+      "string": "matrilineal",
+      "string_va": "0x141019e68",
+      "xref": "0x1404cdba0",
+      "instruction": "lea rdx, [rip + 0xb4c2c1]",
+      "function": [
+        "0x1404cd580",
+        "0x1404cde54"
+      ]
+    },
+    {
+      "string": "matrilineal_text",
+      "string_va": "0x141019e98",
+      "xref": "0x1404cdbec",
+      "instruction": "lea rdx, [rip + 0xb4c2a5]",
+      "function": [
+        "0x1404cd580",
+        "0x1404cde54"
+      ]
+    },
+    {
+      "string": "matrilineal",
+      "string_va": "0x141019e68",
+      "xref": "0x1404cdc73",
+      "instruction": "lea rdx, [rip + 0xb4c1ee]",
+      "function": [
+        "0x1404cd580",
+        "0x1404cde54"
+      ]
+    },
+    {
+      "string": "matrilineal",
+      "string_va": "0x141019e68",
+      "xref": "0x1404cdcbc",
+      "instruction": "lea rdx, [rip + 0xb4c1a5]",
+      "function": [
+        "0x1404cd580",
+        "0x1404cde54"
+      ]
+    },
+    {
+      "string": "matrilineal",
+      "string_va": "0x141019e68",
+      "xref": "0x1404cdd0c",
+      "instruction": "lea rdx, [rip + 0xb4c155]",
+      "function": [
+        "0x1404cd580",
+        "0x1404cde54"
+      ]
+    },
+    {
+      "string": "matrilineal",
+      "string_va": "0x141019e68",
+      "xref": "0x1404d71f3",
+      "instruction": "lea rdx, [rip + 0xb42c6e]",
+      "function": [
+        "0x1404d6580",
+        "0x1404d8b57"
+      ]
+    },
+    {
+      "string": "matrilineal_text",
+      "string_va": "0x141019e98",
+      "xref": "0x1404d721c",
+      "instruction": "lea rdx, [rip + 0xb42c75]",
+      "function": [
+        "0x1404d6580",
+        "0x1404d8b57"
+      ]
+    },
+    {
+      "string": "common/governments",
+      "string_va": "0x141036e18",
+      "xref": "0x1404ddacf",
+      "instruction": "lea rdx, [rip + 0xb59342]",
+      "function": [
+        "0x1404dd640",
+        "0x1404ddf54"
+      ]
+    },
+    {
+      "string": "common/bloodlines",
+      "string_va": "0x1410370d0",
+      "xref": "0x1404dde08",
+      "instruction": "lea rdx, [rip + 0xb592c1]",
+      "function": [
+        "0x1404dd640",
+        "0x1404ddf54"
+      ]
+    },
+    {
+      "string": "BLOODLINE_PATRILINEAL_INHERITANCE",
+      "string_va": "0x141038f98",
+      "xref": "0x1404f6075",
+      "instruction": "lea rdx, [rip + 0xb42f1c]",
+      "function": [
+        "0x1404f5f80",
+        "0x1404f63e4"
+      ]
+    },
+    {
+      "string": "BLOODLINE_PATRILINEAL_INHERITANCE_DELAYED",
+      "string_va": "0x141038fc0",
+      "xref": "0x1404f6084",
+      "instruction": "lea rdx, [rip + 0xb42f35]",
+      "function": [
+        "0x1404f5f80",
+        "0x1404f63e4"
+      ]
+    },
+    {
+      "string": "BLOODLINE_MATRILINEAL_INHERITANCE",
+      "string_va": "0x141038f40",
+      "xref": "0x1404f6096",
+      "instruction": "lea rdx, [rip + 0xb42ea3]",
+      "function": [
+        "0x1404f5f80",
+        "0x1404f63e4"
+      ]
+    },
+    {
+      "string": "BLOODLINE_MATRILINEAL_INHERITANCE_DELAYED",
+      "string_va": "0x141038f68",
+      "xref": "0x1404f60a5",
+      "instruction": "lea rdx, [rip + 0xb42ebc]",
+      "function": [
+        "0x1404f5f80",
+        "0x1404f63e4"
+      ]
+    },
+    {
+      "string": "BLOODLINE_MATRILINEAL_INVERSION",
+      "string_va": "0x141038ef8",
+      "xref": "0x1404f60b7",
+      "instruction": "lea rdx, [rip + 0xb42e3a]",
+      "function": [
+        "0x1404f5f80",
+        "0x1404f63e4"
+      ]
+    },
+    {
+      "string": "BLOODLINE_MATRILINEAL_INVERSION_DELAYED",
+      "string_va": "0x141038f18",
+      "xref": "0x1404f60cc",
+      "instruction": "lea rdx, [rip + 0xb42e45]",
+      "function": [
+        "0x1404f5f80",
+        "0x1404f63e4"
+      ]
+    },
+    {
+      "string": "BLOODLINE_NO_BASTARDS_INHERITANCE",
+      "string_va": "0x141038ea0",
+      "xref": "0x1404f6334",
+      "instruction": "lea rdx, [rip + 0xb42b65]",
+      "function": [
+        "0x1404f5f80",
+        "0x1404f63e4"
+      ]
+    },
+    {
+      "string": "BLOODLINE_NO_BASTARDS_INHERITANCE_DELAYED",
+      "string_va": "0x141039160",
+      "xref": "0x1404f6343",
+      "instruction": "lea rdx, [rip + 0xb42e16]",
+      "function": [
+        "0x1404f5f80",
+        "0x1404f63e4"
+      ]
+    },
+    {
+      "string": "bloodlines_window",
+      "string_va": "0x141039450",
+      "xref": "0x1404fd11a",
+      "instruction": "lea rdx, [rip + 0xb3c32f]",
+      "function": [
+        "0x1404fd080",
+        "0x1404fe1d5"
+      ]
+    },
+    {
+      "string": "government_icon",
+      "string_va": "0x14103a090",
+      "xref": "0x1405072f3",
+      "instruction": "lea rdx, [rip + 0xb32d96]",
+      "function": [
+        "0x140502f10",
+        "0x1405079c9"
+      ]
+    },
+    {
+      "string": "government_icon",
+      "string_va": "0x14103a090",
+      "xref": "0x14050b180",
+      "instruction": "lea rdx, [rip + 0xb2ef09]",
+      "function": [
+        "0x14050a670",
+        "0x14050beff"
+      ]
+    },
+    {
+      "string": "Scope.GetLandedTitle()->IsValid() && \"Wrong Scope in effect CSetProtectedInheritance\"",
+      "string_va": "0x141051d30",
+      "xref": "0x140594296",
+      "instruction": "lea r8, [rip + 0xabda93]",
+      "function": [
+        "0x1405941e0",
+        "0x1405942f0"
+      ]
+    },
+    {
+      "string": "PROTECTED_INHERITANCE_ON",
+      "string_va": "0x141051d08",
+      "xref": "0x14059431e",
+      "instruction": "lea rdx, [rip + 0xabd9e3]",
+      "function": [
+        "0x1405942f0",
+        "0x14059436f"
+      ]
+    },
+    {
+      "string": "PROTECTED_INHERITANCE_OFF",
+      "string_va": "0x141051ce8",
+      "xref": "0x140594333",
+      "instruction": "lea rdx, [rip + 0xabd9ae]",
+      "function": [
+        "0x1405942f0",
+        "0x14059436f"
+      ]
+    },
+    {
+      "string": "Scope.GetLandedTitle()->IsValid() && \"Wrong Scope in effect CSetAllowMatrilinealMarriage\"",
+      "string_va": "0x141052210",
+      "xref": "0x140595016",
+      "instruction": "lea r8, [rip + 0xabd1f3]",
+      "function": [
+        "0x140594f60",
+        "0x140595073"
+      ]
+    },
+    {
+      "string": "ALLOW_MATRILINEAL_MARRIAGE_ON",
+      "string_va": "0x1410521f0",
+      "xref": "0x1405950bc",
+      "instruction": "lea rdx, [rip + 0xabd12d]",
+      "function": [
+        "0x140595080",
+        "0x1405950fd"
+      ]
+    },
+    {
+      "string": "set_government_type",
+      "string_va": "0x1410540c0",
+      "xref": "0x1405c55df",
+      "instruction": "lea rdx, [rip + 0xa8eada]",
+      "function": [
+        "0x1405c5580",
+        "0x1405c5600"
+      ]
+    },
+    {
+      "string": "!\"Unknown inheritance type in create_bloodline effect\"",
+      "string_va": "0x141057078",
+      "xref": "0x1405faf83",
+      "instruction": "lea r8, [rip + 0xa5c0ee]",
+      "function": [
+        "0x1405fae30",
+        "0x1405fb065"
+      ]
+    },
+    {
+      "string": "SET_MATRILINEAL_MARRIAGE_EFFECT",
+      "string_va": "0x1410586b8",
+      "xref": "0x14060e7ad",
+      "instruction": "lea rax, [rip + 0xa49f04]",
+      "function": [
+        "0x14060e760",
+        "0x14060e841"
+      ]
+    },
+    {
+      "string": "SET_NOT_MATRILINEAL_MARRIAGE_EFFECT",
+      "string_va": "0x141058690",
+      "xref": "0x14060e7b4",
+      "instruction": "lea rdx, [rip + 0xa49ed5]",
+      "function": [
+        "0x14060e760",
+        "0x14060e841"
+      ]
+    },
+    {
+      "string": "laws_inheritance_bg",
+      "string_va": "0x14105be98",
+      "xref": "0x1406489b6",
+      "instruction": "lea rcx, [rip + 0xa134db]",
+      "function": [
+        "0x140648670",
+        "0x140649916"
+      ]
+    },
+    {
+      "string": "charselect_matrilineal_bg",
+      "string_va": "0x14105c968",
+      "xref": "0x140649532",
+      "instruction": "lea rcx, [rip + 0xa1342f]",
+      "function": [
+        "0x140648670",
+        "0x140649916"
+      ]
+    },
+    {
+      "string": "matrilineal_marriages",
+      "string_va": "0x140ff9318",
+      "xref": "0x140731a96",
+      "instruction": "lea rdx, [rip + 0x8c787b]",
+      "function": [
+        "0x1407314c0",
+        "0x140732380"
+      ]
+    },
+    {
+      "string": "inheritance",
+      "string_va": "0x14106ae50",
+      "xref": "0x1407a80e6",
+      "instruction": "lea rdx, [rip + 0x8c2d63]",
+      "function": [
+        "0x1407a7850",
+        "0x1407a8498"
+      ]
+    },
+    {
+      "string": "D:\\jenkins\\workspace\\ck2\\ck2\\source\\government.cpp",
+      "string_va": "0x14106b4a0",
+      "xref": "0x1407af084",
+      "instruction": "lea rax, [rip + 0x8bc415]",
+      "function": [
+        "0x1407aef70",
+        "0x1407b0f57"
+      ]
+    },
+    {
+      "string": "D:\\jenkins\\workspace\\ck2\\ck2\\source\\governmentflavor.cpp",
+      "string_va": "0x14106bf58",
+      "xref": "0x1407b6a64",
+      "instruction": "lea rdi, [rip + 0x8b54ed]",
+      "function": [
+        "0x1407b69d0",
+        "0x1407b6f35"
+      ]
+    },
+    {
+      "string": "D:\\jenkins\\workspace\\ck2\\ck2\\source\\governmentflavor.cpp",
+      "string_va": "0x14106bf58",
+      "xref": "0x1407b6e0a",
+      "instruction": "lea rdi, [rip + 0x8b5147]",
+      "function": [
+        "0x1407b69d0",
+        "0x1407b6f35"
+      ]
+    },
+    {
+      "string": "D:\\jenkins\\workspace\\ck2\\ck2\\source\\governmentflavor.cpp",
+      "string_va": "0x14106bf58",
+      "xref": "0x1407b6e35",
+      "instruction": "lea rdi, [rip + 0x8b511c]",
+      "function": [
+        "0x1407b69d0",
+        "0x1407b6f35"
+      ]
+    },
+    {
+      "string": "INHERITANCE_INFAMY",
+      "string_va": "0x14106ca30",
+      "xref": "0x1407c7bc1",
+      "instruction": "lea rdx, [rip + 0x8a4e68]",
+      "function": [
+        "0x1407c7ad0",
+        "0x1407c7c57"
+      ]
+    },
+    {
+      "string": "tab_inheritance",
+      "string_va": "0x14106ea08",
+      "xref": "0x1407ec4e8",
+      "instruction": "lea rdx, [rip + 0x882519]",
+      "function": [
+        "0x1407ec450",
+        "0x1407ed025"
+      ]
+    },
+    {
+      "string": "inheritance_view",
+      "string_va": "0x14106eb00",
+      "xref": "0x1407eca3b",
+      "instruction": "lea rdx, [rip + 0x8820be]",
+      "function": [
+        "0x1407ec450",
+        "0x1407ed025"
+      ]
+    },
+    {
+      "string": "tab_inheritance",
+      "string_va": "0x14106ea08",
+      "xref": "0x1407ed064",
+      "instruction": "lea rdx, [rip + 0x88199d]",
+      "function": [
+        "0x1407ed030",
+        "0x1407ed139"
+      ]
+    },
+    {
+      "string": "LEDGER_POSSIBLE_INHERITANCES",
+      "string_va": "0x14106fa48",
+      "xref": "0x1407f53d6",
+      "instruction": "lea rdx, [rip + 0x87a66b]",
+      "function": [
+        "0x1407f0d80",
+        "0x1407f5ff7"
+      ]
+    },
+    {
+      "string": "society_bloodlines_window",
+      "string_va": "0x14108bc48",
+      "xref": "0x140a1c75b",
+      "instruction": "lea rdx, [rip + 0x66f4e6]",
+      "function": [
+        "0x140a1c670",
+        "0x140a1d5f1"
+      ]
+    },
+    {
+      "string": "ACQUISITION_INHERITANCE",
+      "string_va": "0x14108e2b8",
+      "xref": "0x140a493f2",
+      "instruction": "lea rdx, [rip + 0x644ebf]",
+      "function": [
+        "0x140a493c0",
+        "0x140a49578"
+      ]
+    },
+    {
+      "string": "on_new_holder_inheritance",
+      "string_va": "0x14108e8f8",
+      "xref": "0x140a61216",
+      "instruction": "lea rdx, [rip + 0x62d6db]",
+      "function": [
+        "0x140a5cde0",
+        "0x140a614d0"
+      ]
+    },
+    {
+      "string": "false && \"CHasInheritanceBlockingTraitTrigger has wrong Scope\"",
+      "string_va": "0x1410cbb40",
+      "xref": "0x140b5aed3",
+      "instruction": "lea r8, [rip + 0x570c66]",
+      "function": [
+        "0x140b5ae60",
+        "0x140b5af1e"
+      ]
+    },
+    {
+      "string": "HAS_NOT_INHERITANCE_BLOCKER",
+      "string_va": "0x1410cbbb0",
+      "xref": "0x140b5af6e",
+      "instruction": "lea rdx, [rip + 0x570c3b]",
+      "function": [
+        "0x140b5af20",
+        "0x140b5b03b"
+      ]
+    },
+    {
+      "string": "HAS_INHERITANCE_BLOCKER",
+      "string_va": "0x1410cbb98",
+      "xref": "0x140b5afc1",
+      "instruction": "lea rdx, [rip + 0x570bd0]",
+      "function": [
+        "0x140b5af20",
+        "0x140b5b03b"
+      ]
+    }
+  ]
+}

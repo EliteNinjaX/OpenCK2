@@ -322,6 +322,19 @@ struct camera {
     float x, y, height, forward_y, forward_height, focal;
 };
 
+/* World-space rectangle covered by the ground pixels that are on screen. */
+struct map_bounds {
+    int min_x, min_y, max_x, max_y;
+};
+
+static void bounds_add(struct map_bounds *bounds, int x, int y)
+{
+    bounds->min_x = SDL_min(bounds->min_x, x);
+    bounds->min_y = SDL_min(bounds->min_y, y);
+    bounds->max_x = SDL_max(bounds->max_x, x);
+    bounds->max_y = SDL_max(bounds->max_y, y);
+}
+
 static struct camera camera_for(const struct map_view *view, bool campaign)
 {
     /* CK2's final menu camera points from (790, 500, 600) to (790, 0, 1000).
@@ -355,7 +368,7 @@ static Uint32 shade_map_frame(const struct map_view *view, const SDL_Surface *te
 
 static void render_row(const struct map_view *view, const struct layers *layers,
                         struct camera camera, int y, Uint32 *output, Uint32 *samples,
-                        struct map_water *water, bool campaign)
+                        struct map_water *water, struct map_bounds *bounds, bool campaign)
 {
     const float vertical = (view->height * 0.5f - (y + 0.5f)) / camera.focal;
     const float ray_y = camera.forward_y + vertical * camera.forward_height;
@@ -391,6 +404,7 @@ static void render_row(const struct map_view *view, const struct layers *layers,
         }
 
         samples[x] = (Uint32)((size_t)my * view->world_width + mx);
+        bounds_add(bounds, mx, my);
         /* The water shader's 93.7 reference height also covers land where
            the river bitmap has no valid channel data, such as Iceland. */
         const bool ocean = index_at(layers->height, mx, my) < 94;
@@ -535,12 +549,22 @@ static void draw_tree(SDL_Surface *frame, const struct layers *layers, struct ca
     }
 }
 
-static void draw_forest(SDL_Surface *frame, const struct layers *layers, struct camera camera)
+static void draw_forest(SDL_Surface *frame, const struct layers *layers, struct camera camera,
+                        struct map_bounds visible)
 {
     const int width = layers->color->w, height = layers->color->h;
+    if (visible.max_x < visible.min_x || visible.max_y < visible.min_y)
+        return;
+    /* Trees stand up to ~65 units above the ground they are drawn over, so a margin
+       of 128 world pixels around the visible ground keeps every on-screen crown. */
+    const int margin = 128;
+    const int x_begin = SDL_max(0, visible.min_x - margin) / 3 * 3;
+    const int y_begin = SDL_max(0, visible.min_y - margin) / 3 * 3;
+    const int x_end = SDL_min(width - 3, visible.max_x + margin + 1);
+    const int y_end = SDL_min(height - 3, visible.max_y + margin + 1);
     /* The tree definition bitmap marks forest cells. Scatter stable crowns inside those cells. */
-    for (int y = 0; y < height - 3; y += 3) {
-        for (int x = 0; x < width - 3; x += 3) {
+    for (int y = y_begin; y < y_end; y += 3) {
+        for (int x = x_begin; x < x_end; x += 3) {
             const Uint32 seed = hash_pixel((unsigned)x, (unsigned)y);
             if ((seed & 7) > 4)
                 continue;
@@ -582,12 +606,31 @@ static struct rgb reflect_color(const struct map_water *water, float x, float y,
     return rgb_at(surface, SDL_clamp(sx, 0, surface->w - 1), SDL_clamp(sy, 0, surface->h - 1));
 }
 
-static void shade_waves(struct map_view *view, Uint64 now)
+enum { MAX_MAP_THREADS = 16 };
+
+/* Runs `function(data)` on the calling thread and on one helper per extra CPU core.
+   The function must pull its work from shared state in `data` (see the atomic counters). */
+static void run_parallel(SDL_ThreadFunction function, void *data)
+{
+    SDL_Thread *threads[MAX_MAP_THREADS - 1];
+    const int helpers = SDL_clamp(SDL_GetCPUCount() - 1, 0, MAX_MAP_THREADS - 1);
+    int started = 0;
+    while (started < helpers) {
+        threads[started] = SDL_CreateThread(function, "map worker", data);
+        if (!threads[started])
+            break;
+        ++started;
+    }
+    function(data);
+    for (int i = 0; i < started; ++i)
+        SDL_WaitThread(threads[i], NULL);
+}
+
+static void shade_wave_range(const struct map_view *view, int phase, size_t begin, size_t end)
 {
     const struct map_water *water = view->water;
     const SDL_Surface *noise = water->noise, *normal = water->normal;
-    const int phase = (int)((now / 65) % 4096);
-    for (size_t i = 0; i < water->count; ++i) {
+    for (size_t i = begin; i < end; ++i) {
         const struct water_pixel pixel = water->pixels[i];
         const float x = pixel.x, y = pixel.y;
         const SDL_Rect noise_tile = {0, 0, noise->w, noise->h};
@@ -623,6 +666,35 @@ static void shade_waves(struct map_view *view, Uint64 now)
     }
 }
 
+enum { WAVE_CHUNK = 8192 };
+
+struct wave_job {
+    const struct map_view *view;
+    int phase;
+    size_t count;
+    SDL_atomic_t next;
+};
+
+static int wave_worker(void *data)
+{
+    struct wave_job *job = data;
+    const size_t chunks = (job->count + WAVE_CHUNK - 1) / WAVE_CHUNK;
+    for (int chunk; (chunk = SDL_AtomicAdd(&job->next, 1)) >= 0 && (size_t)chunk < chunks;) {
+        const size_t begin = (size_t)chunk * WAVE_CHUNK;
+        shade_wave_range(job->view, job->phase, begin, SDL_min(job->count, begin + WAVE_CHUNK));
+    }
+    return 0;
+}
+
+static void shade_waves(struct map_view *view, Uint64 now)
+{
+    struct wave_job job = {.view = view, .phase = (int)((now / 65) % 4096), .count = view->water->count};
+    if (job.count < 2 * WAVE_CHUNK)
+        shade_wave_range(view, job.phase, 0, job.count);
+    else
+        run_parallel(wave_worker, &job);
+}
+
 bool map_view_animate(struct map_view *view, Uint64 now)
 {
     if (!view->water || now - view->water->last_update < 65)
@@ -631,6 +703,42 @@ bool map_view_animate(struct map_view *view, Uint64 now)
     shade_waves(view, now);
     return SDL_UpdateTexture(view->texture, NULL, view->water->frame->pixels,
                              view->water->frame->pitch) == 0;
+}
+
+enum { ROW_BLOCK = 16 };
+
+struct render_job {
+    const struct map_view *view;
+    const struct layers *layers;
+    struct camera camera;
+    bool campaign;
+    int blocks;
+    size_t *counts;
+    struct map_bounds *bounds;
+    SDL_atomic_t next;
+};
+
+/* Each block of rows keeps its water pixels in its own slice of water->pixels
+   (a row has at most `width` of them), so workers never write to the same place. */
+static int render_worker(void *data)
+{
+    struct render_job *job = data;
+    const struct map_view *view = job->view;
+    struct map_water *water = view->water;
+    for (int block; (block = SDL_AtomicAdd(&job->next, 1)) >= 0 && block < job->blocks;) {
+        const int first = block * ROW_BLOCK;
+        const int last = SDL_min(view->height, first + ROW_BLOCK);
+        struct map_water local = {.pixels = water->pixels + (size_t)first * view->width};
+        struct map_bounds *bounds = &job->bounds[block];
+        *bounds = (struct map_bounds){view->world_width, view->world_height, -1, -1};
+        for (int y = first; y < last; ++y) {
+            Uint32 *row = (Uint32 *)((Uint8 *)water->frame->pixels + (size_t)y * water->frame->pitch);
+            render_row(view, job->layers, job->camera, y, row,
+                       view->samples + (size_t)y * view->width, &local, bounds, job->campaign);
+        }
+        job->counts[block] = local.count;
+    }
+    return 0;
 }
 
 static int render_view(struct map_view *view, bool campaign)
@@ -642,23 +750,49 @@ static int render_view(struct map_view *view, bool campaign)
     water->camera_y = camera.y;
     water->camera_height = camera.height;
     water->count = 0;
-    for (int y = 0; y < view->height; ++y) {
-        Uint32 *row = (Uint32 *)((Uint8 *)water->frame->pixels + (size_t)y * water->frame->pitch);
-        render_row(view, layers, camera, y, row, view->samples + (size_t)y * view->width, water, campaign);
-    }
 
-    draw_forest(water->frame, layers, camera);
+    const int blocks = (view->height + ROW_BLOCK - 1) / ROW_BLOCK;
+    size_t *counts = calloc((size_t)blocks, sizeof *counts);
+    struct map_bounds *block_bounds = calloc((size_t)blocks, sizeof *block_bounds);
+    if (!counts || !block_bounds) {
+        free(counts);
+        free(block_bounds);
+        return SDL_OutOfMemory();
+    }
+    struct render_job job = {.view = view, .layers = layers, .camera = camera, .campaign = campaign,
+                             .blocks = blocks, .counts = counts, .bounds = block_bounds};
+    run_parallel(render_worker, &job);
+
+    /* Gather the per-block water pixels and visible bounds. Blocks are in row order and
+       each slice starts at or after the write position, so a forward move is safe. */
+    size_t total = 0;
+    struct map_bounds visible = {view->world_width, view->world_height, -1, -1};
+    for (int block = 0; block < blocks; ++block) {
+        struct water_pixel *slice = water->pixels + (size_t)block * ROW_BLOCK * view->width;
+        if (slice != water->pixels + total)
+            memmove(water->pixels + total, slice, counts[block] * sizeof *slice);
+        total += counts[block];
+        if (block_bounds[block].max_x >= 0) {
+            bounds_add(&visible, block_bounds[block].min_x, block_bounds[block].min_y);
+            bounds_add(&visible, block_bounds[block].max_x, block_bounds[block].max_y);
+        }
+    }
+    water->count = total;
+    free(counts);
+    free(block_bounds);
+
+    draw_forest(water->frame, layers, camera, visible);
     draw_map_frame(view, camera);
-    size_t visible = 0;
+    size_t kept = 0;
     for (size_t i = 0; i < water->count; ++i) {
         const struct water_pixel pixel = water->pixels[i];
         const Uint32 *row = (const Uint32 *)((const Uint8 *)water->frame->pixels +
             (size_t)(pixel.screen / (unsigned)view->width) * water->frame->pitch);
         if (view->samples[pixel.screen] != SDL_MAX_UINT32 &&
             row[pixel.screen % (unsigned)view->width] == pixel.base)
-            water->pixels[visible++] = pixel;
+            water->pixels[kept++] = pixel;
     }
-    water->count = visible;
+    water->count = kept;
     shade_waves(view, SDL_GetTicks64());
     ++view->revision;
     return SDL_UpdateTexture(view->texture, NULL, water->frame->pixels, water->frame->pitch);
