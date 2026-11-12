@@ -15,6 +15,9 @@
 #include "character_view.h"
 #include "construction.h"
 #include "map_view.h"
+#include "map_interaction.h"
+#include "map_modes.h"
+#include "campaign_hud.h"
 
 #include <SDL_image.h>
 #include <errno.h>
@@ -94,7 +97,6 @@ static const SDL_Rect campaign_hud[] = {
     {0, 0, 492, 136}, {1174, 0, 426, 72}, {1324, 213, 276, 67},
     {0, 276, 348, 624}, {1320, 696, 280, 204},
 };
-static const SDL_Rect hud_navigation = {146, 15, 320, 36};
 
 static bool campaign_map_area(SDL_Point point)
 {
@@ -171,8 +173,9 @@ struct menu {
     float holding_art_scale[2];
     bool holding_layout_ready;
     unsigned holding_province;
-    SDL_Point drag_start;
-    Uint8 drag_button;
+    struct map_gesture map_gesture;
+    struct map_mode_state map_modes;
+    struct campaign_hud_ui hud_ui;
     bool realms_visible, campaign_active;
     SDL_Point pointer;
     struct campaign campaign;
@@ -192,6 +195,30 @@ struct menu {
     int credit_scroll, credit_scroll_max;
     bool running;
 };
+
+/* Map events must never pass through a visible panel or a map-mode button. */
+static bool campaign_map_interactive(const struct menu *menu, SDL_Point point)
+{
+    if (!campaign_map_area(point))
+        return false;
+    if ((menu->character.open && SDL_PointInRect(&point, &menu->character.background.area)) ||
+        menu->wonder.open ||
+        (menu->building_open && SDL_PointInRect(&point, &menu->building_panel)) ||
+        campaign_hud_ui_mode_hit(&menu->hud_ui, point) >= 0 ||
+        campaign_hud_ui_nav_hit(&menu->hud_ui, point) >= 0)
+        return false;
+    return true;
+}
+
+static const struct province *campaign_pointer_province(const struct menu *menu, SDL_Point pointer)
+{
+    if (!campaign_map_interactive(menu, pointer))
+        return NULL;
+    SDL_Point world;
+    if (!map_view_pick(&menu->campaign_map, pointer.x, pointer.y, &world))
+        return NULL;
+    return province_at(&menu->provinces, world.x, world.y);
+}
 
 static void blit(SDL_Renderer *renderer, SDL_Texture *texture, int x, int y)
 {
@@ -1238,15 +1265,55 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
         SDL_RenderCopy(renderer, menu->campaign_ruler->portrait, NULL, &(SDL_Rect){16, 18, 106, 106});
     else
         SDL_RenderCopy(renderer, assets->hud_arms, NULL, &(SDL_Rect){51, 54, 38, 38});
+    /* The normal path uses original main.gui rectangles and GFX sprite frames.
+     * Raw icons remain a graceful fallback when optional GUI definitions fail. */
     for (size_t i = 0; i < SDL_arraysize(assets->hud_tabs); ++i) {
+        if (menu->hud_ui.navigation[i].texture) continue;
         SDL_Texture *icon = assets->hud_tabs[i];
+        const SDL_Rect fallback = {146 + (int)i * 41, 15, 32, 36};
         SDL_SetTextureColorMod(icon, 175, 175, 175);
-        SDL_RenderCopy(renderer, icon, &(SDL_Rect){0, 0, 32, 36},
-                       &(SDL_Rect){146 + (int)i * 41, 15, 32, 36});
+        SDL_RenderCopy(renderer, icon, &(SDL_Rect){0, 0, 32, 36}, &fallback);
+        SDL_SetTextureColorMod(icon, 255, 255, 255);
     }
+    campaign_hud_ui_draw(&menu->hud_ui, renderer, menu->pointer, menu->map_modes.selected);
     draw_buildings(renderer, assets, menu);
     draw_wonder(renderer, assets, menu);
     draw_topbar_tooltip(renderer, assets, menu);
+    const int hovered_mode = campaign_hud_ui_mode_hit(&menu->hud_ui, menu->pointer);
+    if (hovered_mode >= 0) {
+        const struct map_mode_definition *mode = map_mode_definition(hovered_mode);
+        panel_tooltip(renderer, assets, menu->pointer, mode->label,
+                      mode->implemented ? "Select this map mode" : "Map coloring not implemented yet",
+                      centered_text);
+    } else {
+        const int nav = campaign_hud_ui_nav_hit(&menu->hud_ui, menu->pointer);
+        if (nav >= 0) {
+            panel_tooltip(renderer, assets, menu->pointer, campaign_hud_nav_label(nav),
+                          "Navigation screen not implemented yet", centered_text);
+        } else if (!menu->map_gesture.active && !menu->wonder.open) {
+            const struct province *province = campaign_pointer_province(menu, menu->pointer);
+            if (province) {
+                const size_t index = (size_t)(province - menu->provinces.provinces);
+                struct realm_province_ownership owners;
+                realm_province_ownership(&menu->realms, index, &owners);
+                const bool owned = owners.has_county, realm = owners.has_independent;
+                const struct realm_title_info county = owners.county, independent = owners.independent;
+                const struct ruler_profile *holder = owned ? realm_ruler(&menu->realms, county.holder) : NULL;
+                const struct ruler_profile *liege = realm ? realm_ruler(&menu->realms, independent.holder) : NULL;
+                char heading[224], details[768];
+                snprintf(heading, sizeof heading, "%s (province %u)", province->name, province->id);
+                snprintf(details, sizeof details,
+                         "County: %s\nOwner: %s\nIndependent realm: %s\nTop liege: %s%s%s",
+                         owned ? county.name : "Not available",
+                         holder && holder->name[0] ? holder->name : "Not available",
+                         realm ? independent.name : "Not available",
+                         liege && liege->name[0] ? liege->name : "Not available",
+                         owned && county.holder ? "\nRight-click: view county holder" : "",
+                         realm && independent.holder ? "\nShift + right-click: view top liege" : "");
+                panel_tooltip(renderer, assets, menu->pointer, heading, details, centered_text);
+            }
+        }
+    }
 }
 
 static void select_province(struct menu *menu, const struct province *province)
@@ -1728,6 +1795,9 @@ static void open_campaign(struct menu *menu, SDL_Window *window, bool new_game)
     if (!load_realms(menu, window, menu->start_date))
         menu->realms_visible = false;
     load_campaign_topbar(menu);
+    campaign_hud_ui_load(&menu->hud_ui, menu->renderer, menu->asset_root,
+                         (SDL_Point){WIDTH, HEIGHT});
+    menu->map_modes.selected = menu->realms_visible ? MAP_MODE_REALMS : MAP_MODE_TERRAIN;
     if (new_game)
         menu->campaign_speed = 4;
     menu_sound_stop_country(&menu->music);
@@ -1749,6 +1819,8 @@ static void move_map(struct menu *menu, SDL_Window *window, int dx, int dy, int 
         : menu->era.eras[menu->era.selected].date;
     if (menu->realms_visible && !load_realms(menu, window, date))
         menu->realms_visible = false;
+    if (menu->screen == CAMPAIGN)
+        menu->map_modes.selected = menu->realms_visible ? MAP_MODE_REALMS : MAP_MODE_TERRAIN;
     if (menu->screen == CAMPAIGN && menu->selected) {
         const struct province *selected = menu->selected;
         menu->selected = NULL;
@@ -2098,7 +2170,6 @@ static void draw(SDL_Renderer *renderer,
     }
     SDL_SetTextureAlphaMod(assets->font, 255);
     if (action_unimplemented(menu->hover) ||
-        (menu->screen == CAMPAIGN && SDL_PointInRect(&menu->pointer, &hud_navigation)) ||
         (menu->screen == STARTING_ERA && (era_menu_deferred(&menu->era, menu->pointer) ||
          (menu->hover == START_ERA && menu->era.selected >= 0 && !era_menu_can_start(&menu->era)))))
         settings_unavailable_tooltip(renderer, assets, centered_text, menu->pointer);
@@ -2268,6 +2339,7 @@ static void activate(struct menu *menu, SDL_Window *window, enum action action)
             menu->realms_visible = false;
         else
             menu->realms_visible = load_realms(menu, window, date);
+        menu->map_modes.selected = menu->realms_visible ? MAP_MODE_REALMS : MAP_MODE_TERRAIN;
         break;
     }
     case SPEED_UP:
@@ -2381,6 +2453,35 @@ static SDL_Cursor *load_game_cursor(const char *root)
     return cursor;
 }
 
+static void select_campaign_mode(struct menu *menu, SDL_Window *window, enum map_mode_id mode)
+{
+    /* No false coloring: unsupported buttons stay visible but inactive. */
+    if (!map_mode_select(&menu->map_modes, mode))
+        return;
+    if (mode == MAP_MODE_REALMS && !menu->realms_visible)
+        menu->realms_visible = load_realms(menu, window, menu->start_date);
+    else if (mode == MAP_MODE_TERRAIN)
+        menu->realms_visible = false;
+    if (mode == MAP_MODE_REALMS && !menu->realms_visible)
+        menu->map_modes.selected = MAP_MODE_TERRAIN;
+    menu_sound_play(&menu->music, CUE_GENERIC);
+}
+
+static void campaign_open_province_owner(struct menu *menu, SDL_Point pointer, bool top_liege)
+{
+    const struct province *province = campaign_pointer_province(menu, pointer);
+    if (!province) return;
+    const size_t index = (size_t)(province - menu->provinces.provinces);
+    struct realm_province_ownership owners;
+    realm_province_ownership(&menu->realms, index, &owners);
+    const bool has_target = top_liege ? owners.has_independent : owners.has_county;
+    const struct realm_title_info *target = top_liege ? &owners.independent : &owners.county;
+    if (!has_target || !target->holder)
+        return;
+    const struct ruler_profile *holder = realm_ruler(&menu->realms, target->holder);
+    if (holder) inspect_campaign_character(menu, holder);
+}
+
 static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event *event)
 {
     if (event->type == SDL_WINDOWEVENT && menu->game_cursor) {
@@ -2409,7 +2510,7 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
         break;
     case SDL_WINDOWEVENT:
         if (event->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
-            menu->drag_button = 0;
+            map_gesture_cancel(&menu->map_gesture);
             menu->bookmark_drag = menu->bookmark_scroll_pressed = false;
         }
         if (event->window.event == SDL_WINDOWEVENT_LEAVE) {
@@ -2426,8 +2527,9 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
         }
         if (navigable(menu->screen) && (event->button.button == SDL_BUTTON_MIDDLE ||
                                         event->button.button == SDL_BUTTON_RIGHT)) {
-            menu->drag_start = (SDL_Point){event->button.x, event->button.y};
-            menu->drag_button = event->button.button;
+            const SDL_Point point = {event->button.x, event->button.y};
+            if (menu->screen != CAMPAIGN || campaign_map_interactive(menu, point))
+                map_gesture_begin(&menu->map_gesture, event->button.button, point.x, point.y);
         }
         break;
     case SDL_MOUSEBUTTONUP:
@@ -2435,11 +2537,16 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
             menu->bookmark_drag = menu->bookmark_scroll_pressed = false;
             break;
         }
-        if (menu->drag_button && menu->drag_button == event->button.button) {
-            menu->drag_button = 0;
-            if (navigable(menu->screen))
-                move_map(menu, window, menu->drag_start.x - event->button.x,
-                         menu->drag_start.y - event->button.y, 0);
+        if (menu->map_gesture.active && menu->map_gesture.button == event->button.button) {
+            int dx = 0, dy = 0;
+            const enum map_gesture_result result = map_gesture_end(&menu->map_gesture,
+                event->button.button, event->button.x, event->button.y, 4, &dx, &dy);
+            if (result == MAP_GESTURE_DRAG && navigable(menu->screen))
+                move_map(menu, window, dx, dy, 0);
+            else if (result == MAP_GESTURE_CLICK && menu->screen == CAMPAIGN &&
+                     event->button.button == SDL_BUTTON_RIGHT)
+                campaign_open_province_owner(menu, (SDL_Point){event->button.x, event->button.y},
+                                             (SDL_GetModState() & KMOD_SHIFT) != 0);
             break;
         }
         if (event->button.button == SDL_BUTTON_LEFT) {
@@ -2466,13 +2573,24 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
             if (menu->screen == MAP_SETUP && action == UNAVAILABLE &&
                 setup_select(menu, window, (SDL_Point){x, y}))
                 break;
+            if (menu->screen == CAMPAIGN) {
+                const SDL_Point point = {x, y};
+                const int mode = campaign_hud_ui_mode_hit(&menu->hud_ui, point);
+                if (mode >= 0) {
+                    select_campaign_mode(menu, window, mode);
+                    break;
+                }
+                /* Unimplemented original tabs are visible, but do not click through to the map. */
+                if (campaign_hud_ui_nav_hit(&menu->hud_ui, point) >= 0)
+                    break;
+            }
             if (menu->screen == CAMPAIGN &&
                 (campaign_wonder_click(menu, (SDL_Point){x, y}) ||
                  campaign_character_click(menu, (SDL_Point){x, y}) ||
                  (!menu->character.open && building_click(menu, (SDL_Point){x, y}))))
                 break;
             if (menu->screen == CAMPAIGN && action == UNAVAILABLE &&
-                campaign_map_area((SDL_Point){x, y})) {
+                campaign_map_interactive(menu, (SDL_Point){x, y})) {
                 SDL_Point world;
                 if (map_view_pick(&menu->campaign_map, x, y, &world)) {
                     const struct province *province = province_at(&menu->provinces, world.x, world.y);
@@ -2558,6 +2676,14 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
                 break;
             }
         }
+        if (menu->screen == CAMPAIGN && !event->key.repeat &&
+            !(event->key.keysym.mod & (KMOD_CTRL | KMOD_ALT | KMOD_GUI))) {
+            const int mode = map_mode_shortcut((char)event->key.keysym.sym);
+            if (mode >= 0) {
+                select_campaign_mode(menu, window, mode);
+                break;
+            }
+        }
         switch (event->key.keysym.sym) {
         case SDLK_ESCAPE:
             if (!event->key.repeat) {
@@ -2614,10 +2740,6 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
                 move_map(menu, window, (int)((view->world_width * .5f - view->center_x) * view->zoom),
                          (int)((view->world_height * .5f - view->center_y) * view->zoom), -16);
             }
-            break;
-        case SDLK_w:
-            if (!event->key.repeat && menu->screen == CAMPAIGN)
-                activate(menu, window, TOGGLE_REALMS);
             break;
         case SDLK_PAGEUP:
         case SDLK_PAGEDOWN:
@@ -2724,6 +2846,7 @@ cleanup:
     realm_map_free(&menu.realms);
     era_menu_free(&menu.era);
     setup_toolbar_free(&menu.toolbar);
+    campaign_hud_ui_free(&menu.hud_ui);
     settings_free(&menu.settings);
     construction_free(&menu.construction);
     character_view_free(&menu.character);

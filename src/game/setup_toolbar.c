@@ -32,6 +32,7 @@ struct gfx_source {
 static const char *const gfx_files[] = {
     "interface/main.gfx", "interface/frontend.gfx", "interface/alternate_start.gfx",
     "interface/generalstuff.gfx", "interface/domestic_dynastic.gfx", "interface/wonder.gfx",
+    "interface/domestic_societies.gfx",
 };
 
 static bool integer(struct token t, int *result)

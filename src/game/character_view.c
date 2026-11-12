@@ -351,9 +351,14 @@ void character_view_titles(struct character_view *view, const struct realm_map *
 void character_view_vassals(struct character_view *view, const struct realm_map *realms,
                             SDL_Renderer *renderer, const char *root, character_portrait_fn render, void *context)
 {
-    struct realm_title_info liege, titles[CHARACTER_VASSAL_ROWS];
-    view->vassal_count = realm_primary_title(realms, view->ruler.id, &liege)
-        ? realm_vassal_titles(realms, &liege, view->vassal_scroll, titles, SDL_arraysize(titles)) : 0;
+    struct realm_title_info titles[CHARACTER_VASSAL_ROWS] = {{0}};
+    view->vassal_count = realm_direct_vassals(realms, view->ruler.id, 0, NULL, 0);
+    const size_t maximum = view->vassal_count > CHARACTER_VASSAL_ROWS
+        ? view->vassal_count - CHARACTER_VASSAL_ROWS : 0;
+    if (view->vassal_scroll > maximum)
+        view->vassal_scroll = maximum;
+    realm_direct_vassals(realms, view->ruler.id, view->vassal_scroll,
+                         titles, SDL_arraysize(titles));
     for (size_t i = 0; i < SDL_arraysize(view->vassals); ++i) {
         SDL_DestroyTexture(view->vassals[i].portrait);
         SDL_DestroyTexture(view->vassals[i].shield);

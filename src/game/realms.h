@@ -37,8 +37,20 @@ bool realm_primary_title(const struct realm_map *, unsigned holder, struct realm
 bool realm_vacant_barony(const struct realm_map *, const char *county,
                         const struct county_holdings *, struct realm_title_info *);
 bool realm_county_info(const struct realm_map *, size_t, bool independent, struct realm_title_info *);
+/* County-holder and independent-ruler identities must not be conflated. */
+struct realm_province_ownership {
+    struct realm_title_info county, independent;
+    bool has_county, has_independent;
+};
+bool realm_province_ownership(const struct realm_map *, size_t province,
+                              struct realm_province_ownership *);
+
 size_t realm_vassal_titles(const struct realm_map *, const struct realm_title_info *, size_t,
                            struct realm_title_info *, size_t);
+/* Direct character vassals, deduplicated across all titles of the liege.
+ * Uses dated title holder/liege history; not a full CK2 allegiance model. */
+size_t realm_direct_vassals(const struct realm_map *, unsigned liege_holder, size_t first,
+                            struct realm_title_info *, size_t capacity);
 const struct ruler_profile *realm_ruler(const struct realm_map *, unsigned id);
 const struct ruler_profile *realm_province_ruler(const struct realm_map *, size_t province,
                                                   const char **title, unsigned *capital);

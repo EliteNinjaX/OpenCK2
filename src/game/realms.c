@@ -459,6 +459,17 @@ bool realm_county_info(const struct realm_map *map, size_t province, bool indepe
     return true;
 }
 
+bool realm_province_ownership(const struct realm_map *map, size_t province,
+                              struct realm_province_ownership *owners)
+{
+    if (!owners) return false;
+    *owners = (struct realm_province_ownership){0};
+    if (!map) return false;
+    owners->has_county = realm_county_info(map, province, false, &owners->county);
+    owners->has_independent = realm_county_info(map, province, true, &owners->independent);
+    return owners->has_county || owners->has_independent;
+}
+
 bool realm_vacant_barony(const struct realm_map *map, const char *county,
                         const struct county_holdings *holdings, struct realm_title_info *info)
 {
@@ -499,6 +510,57 @@ size_t realm_vassal_titles(const struct realm_map *map, const struct realm_title
         ++count;
     }
     return count;
+}
+
+/* A ruler may hold several titles. Asking only about their primary title
+ * misses vassals attached to their other titles, while returning raw titles
+ * can show the same person several times. Deduplicate on the character ID.
+ * A true CK2 allegiance resolver is still pending binary/gameplay research. */
+static int compare_direct_vassal(const void *a, const void *b)
+{
+    const struct title *aa = *(const struct title *const *)a;
+    const struct title *bb = *(const struct title *const *)b;
+    if (aa->rank != bb->rank)
+        return bb->rank - aa->rank;
+    return strcmp(aa->id, bb->id);
+}
+
+size_t realm_direct_vassals(const struct realm_map *map, unsigned liege_holder, size_t first,
+                            struct realm_title_info *out, size_t capacity)
+{
+    const struct realm_history *history = map ? map->history : NULL;
+    if (!history || !liege_holder)
+        return 0;
+    const struct title **rows = malloc(history->count * sizeof *rows);
+    if (!rows)
+        return 0;
+    size_t total = 0;
+    for (size_t i = 0; i < history->count; ++i) {
+        const struct title *title = &history->titles[i];
+        if (!title->holder || title->holder == liege_holder)
+            continue;
+        const char *parent = *title->liege ? title->liege : title->rank == 1 ? title->parent : "";
+        if (!*parent)
+            continue;
+        const int parent_index = title_index(history->titles, history->count, parent);
+        if (parent_index < 0 || history->titles[parent_index].holder != liege_holder)
+            continue;
+        size_t existing = 0;
+        for (; existing < total; ++existing)
+            if (rows[existing]->holder == title->holder)
+                break;
+        if (existing == total)
+            rows[total++] = title;
+        else if (title->rank > rows[existing]->rank ||
+                 (title->rank == rows[existing]->rank && strcmp(title->id, rows[existing]->id) < 0))
+            rows[existing] = title;
+    }
+    qsort(rows, total, sizeof *rows, compare_direct_vassal);
+    if (out)
+        for (size_t i = first; i < total && i - first < capacity; ++i)
+            title_info(rows[i], &out[i - first]);
+    free(rows);
+    return total;
 }
 
 const struct ruler_profile *realm_province_ruler(const struct realm_map *map, size_t province,
