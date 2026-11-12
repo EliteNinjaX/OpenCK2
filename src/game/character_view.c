@@ -374,7 +374,7 @@ void character_view_titles(struct character_view *view, const struct realm_map *
 void character_view_vassals(struct character_view *view, const struct realm_map *realms,
                             SDL_Renderer *renderer, const char *root, character_portrait_fn render, void *context)
 {
-    struct realm_title_info titles[CHARACTER_VASSAL_ROWS] = {{0}};
+    struct realm_title_info titles[CHARACTER_VASSAL_ROWS] = {0};
     view->vassal_count = realm_direct_vassals(realms, view->ruler.id, 0, NULL, 0);
     const size_t maximum = view->vassal_count > CHARACTER_VASSAL_ROWS
         ? view->vassal_count - CHARACTER_VASSAL_ROWS : 0;
