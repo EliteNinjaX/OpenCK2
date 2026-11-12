@@ -141,6 +141,8 @@ static void read_resources(struct ruler_profile *ruler, const char *block, int w
 static void read_character(struct ruler_profile *r, const char *block, int cutoff)
 {
     copy_token(r->name, sizeof r->name, field(block, "name"));
+    copy_token(r->government_key, sizeof r->government_key, field(block, "government"));
+    int government_date = 0;
     copy_token(r->culture_key, sizeof r->culture_key, field(block, "culture"));
     copy_token(r->religion_key, sizeof r->religion_key, field(block, "religion"));
     copy_token(r->dna, sizeof r->dna, field(block, "dna"));
@@ -176,6 +178,11 @@ static void read_character(struct ruler_profile *r, const char *block, int cutof
             continue;
         const int when = date_value(key);
         if (when && when <= cutoff) {
+            struct token government = field(block, "government");
+            if (government.size && !is(government, "{") && when >= government_date) {
+                copy_token(r->government_key, sizeof r->government_key, government);
+                government_date = when;
+            }
             read_stats(r, block, when, stat_dates);
             read_traits(block, when, traits, &trait_count);
             read_claims(block, when, claims, &claim_count, true);
