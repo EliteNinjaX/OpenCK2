@@ -24,7 +24,7 @@ struct character_view {
     char section_labels[4][96], section_help[4][512];
     char resource_labels[RULER_RESOURCE_COUNT][64], resource_help[RULER_RESOURCE_COUNT][512];
     char spouse_labels[2][32];
-    SDL_Rect prestige, piety;
+    SDL_Rect prestige, piety, dynasty_shield_area;
     struct setup_widget trait_icons[RULER_TRAIT_LIMIT];
     char trait_names[RULER_TRAIT_LIMIT][96], rank_names[2][6][32];
     SDL_Rect labels[15], family_rows[CHARACTER_FAMILY_ROWS], portrait, spouse, shield, gold;
@@ -53,7 +53,8 @@ struct character_view {
     SDL_Texture *portrait_texture;
     struct realm_title_info display_title;
     bool has_display_title;
-    SDL_Texture *arms;
+    SDL_Texture *arms, *dynasty_arms;
+    bool dynasty_arms_proxy;
     bool open;
 };
 

@@ -131,6 +131,9 @@ int character_view_load(struct character_view *view, SDL_Renderer *renderer, con
         frontend_gui_rect(&gui, frontend_gui_find(&gui, info, "character_portrait"), viewport, &view->portrait) &&
         frontend_gui_rect(&gui, frontend_gui_find(&gui, info, "spouse_portrait"), viewport, &view->spouse) &&
         frontend_gui_rect(&gui, frontend_gui_find(&gui, info, "character_shield"), viewport, &view->shield);
+    /* Original GUI declares dynastic_shield distinctly from character_shield. */
+    frontend_gui_rect(&gui, frontend_gui_find(&gui, info, "dynastic_shield"),
+                      viewport, &view->dynasty_shield_area);
     ok = ok && frontend_gui_rect(&gui, frontend_gui_find(&gui, panel, "vassal_listbox"), viewport, &view->vassal_list) &&
         frontend_gui_rect(&gui, entry, viewport, &view->vassal_entry) &&
         frontend_gui_rect(&gui, frontend_gui_find(&gui, entry, "name"), viewport, &view->vassal_name) &&
@@ -321,8 +324,15 @@ void character_view_titles(struct character_view *view, const struct realm_map *
         view->has_display_title = view->display_title.id[0] == 'k' || view->display_title.id[0] == 'e';
 
     SDL_DestroyTexture(view->arms);
+    SDL_DestroyTexture(view->dynasty_arms);
     view->arms = view->has_display_title
-        ? era_title_shield(renderer, root, view->display_title.id, view->ruler.religion_key) : NULL;
+        ? era_title_shield_big(renderer, root, view->display_title.id, view->ruler.religion_key) : NULL;
+    /* CK2's dynastic CoA is generated from common/dynasties and graphical
+     * patterns. Reusing a title flag is ONLY a temporary visible proxy. */
+    view->dynasty_arms_proxy = view->ruler.dynasty_id && view->has_display_title;
+    view->dynasty_arms = view->dynasty_arms_proxy
+        ? era_title_shield(renderer, root, view->display_title.id,
+                           view->ruler.religion_key) : NULL;
     const size_t visible = (size_t)(view->titles_area.w / view->title_entry.w);
     view->title_count = realm_held_titles(realms, view->ruler.id, view->titles,
                                          SDL_min(visible, SDL_arraysize(view->titles)));
@@ -527,12 +537,15 @@ void character_view_draw(const struct character_view *view, SDL_Renderer *render
     const int frame = title_rank_frame(rank);
     draw_frame(&view->frame, renderer, frame);
     area = view->shield;
-    area.x = SDL_max(view->crown.area.x, area.x);
-    area.w = 55;
-    area.h = 62;
     if (view->arms) {
+        SDL_QueryTexture(view->arms, NULL, NULL, &area.w, &area.h);
         SDL_RenderCopy(renderer, view->arms, NULL, &area);
         draw_frame(&view->crown, renderer, frame);
+    }
+    if (view->dynasty_arms && view->dynasty_shield_area.w >= 0) {
+        area = view->dynasty_shield_area;
+        SDL_QueryTexture(view->dynasty_arms, NULL, NULL, &area.w, &area.h);
+        SDL_RenderCopy(renderer, view->dynasty_arms, NULL, &area);
     }
     const struct setup_widget *const icons[] = {&view->gold_icon, &view->prestige_icon, &view->piety_icon};
     const SDL_Rect resource_values[] = {view->gold, view->prestige, view->piety};
@@ -642,6 +655,13 @@ void character_view_draw(const struct character_view *view, SDL_Renderer *render
             hover = stat_hint;
         }
     }
+    if (view->dynasty_arms && SDL_PointInRect(&pointer, &(SDL_Rect){
+        view->dynasty_shield_area.x, view->dynasty_shield_area.y,
+        view->dynasty_shield_area.w > 0 ? view->dynasty_shield_area.w : 55,
+        view->dynasty_shield_area.h > 0 ? view->dynasty_shield_area.h : 62})) {
+        hover = view->ruler.dynasty;
+        help = "Dynasty shield is a temporary title-flag proxy until CoA patterns are supported";
+    }
     if (view->ruler.religion[0] && SDL_PointInRect(&pointer, &view->religion.area))
         hover = view->ruler.religion;
     if (partner && SDL_PointInRect(&pointer, &(SDL_Rect){view->spouse.x, view->spouse.y, 100, 100}))
@@ -749,6 +769,7 @@ void character_view_free(struct character_view *view)
 {
     clear_family(view);
     SDL_DestroyTexture(view->arms);
+    SDL_DestroyTexture(view->dynasty_arms);
     SDL_DestroyTexture(view->portrait_texture);
     for (size_t i = 0; i < SDL_arraysize(view->vassals); ++i) {
         SDL_DestroyTexture(view->vassals[i].portrait);

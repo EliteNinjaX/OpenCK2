@@ -277,8 +277,9 @@ static bool pagan(const struct era_ruler *ruler)
     return strstr(ruler->religion, "pagan") != NULL;
 }
 
-SDL_Texture *era_title_shield(SDL_Renderer *renderer, const char *root, const char *title,
-                              const char *religion)
+static SDL_Texture *title_shield_masked(SDL_Renderer *renderer, const char *root,
+                                        const char *title, const char *religion,
+                                        bool big)
 {
     char relative[128];
     SDL_snprintf(relative, sizeof relative, "gfx/flags/%s.tga", title);
@@ -288,10 +289,21 @@ SDL_Texture *era_title_shield(SDL_Renderer *renderer, const char *root, const ch
     if (!flag)
         return NULL;
 
-    path = ck2_asset_path(root, strstr(religion, "pagan") ? "gfx/interface/shield_medium_mask_pagan.tga"
-                                            : "gfx/interface/shield_medium_mask.tga");
+    const bool pagan = religion && strstr(religion, "pagan");
+    path = ck2_asset_path(root, big ? (pagan ? "gfx/interface/shield_big_mask_pagan.tga"
+                                              : "gfx/interface/shield_big_mask.tga")
+                                    : (pagan ? "gfx/interface/shield_medium_mask_pagan.tga"
+                                             : "gfx/interface/shield_medium_mask.tga"));
     SDL_Surface *raw_mask = path ? IMG_Load(path) : NULL;
     free(path);
+    if (!raw_mask && big) {
+        /* Some asset mounts have only the medium mask. Keep shields visible
+         * rather than failing the character panel if big artwork is absent. */
+        path = ck2_asset_path(root, pagan ? "gfx/interface/shield_medium_mask_pagan.tga"
+                                          : "gfx/interface/shield_medium_mask.tga");
+        raw_mask = path ? IMG_Load(path) : NULL;
+        free(path);
+    }
     SDL_Surface *mask = raw_mask ? SDL_ConvertSurfaceFormat(raw_mask, SDL_PIXELFORMAT_BGRA32, 0) : NULL;
     SDL_FreeSurface(raw_mask);
     SDL_Surface *shield = mask ? SDL_CreateRGBSurfaceWithFormat(0, mask->w, mask->h, 32,
@@ -313,6 +325,18 @@ SDL_Texture *era_title_shield(SDL_Renderer *renderer, const char *root, const ch
     SDL_FreeSurface(mask);
     SDL_FreeSurface(flag);
     return texture;
+}
+
+SDL_Texture *era_title_shield(SDL_Renderer *renderer, const char *root,
+                              const char *title, const char *religion)
+{
+    return title_shield_masked(renderer, root, title, religion, false);
+}
+
+SDL_Texture *era_title_shield_big(SDL_Renderer *renderer, const char *root,
+                                  const char *title, const char *religion)
+{
+    return title_shield_masked(renderer, root, title, religion, true);
 }
 
 int era_menu_load(struct era_menu *menu, SDL_Renderer *renderer, const char *root)

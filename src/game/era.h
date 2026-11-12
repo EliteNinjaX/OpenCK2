@@ -36,6 +36,7 @@ struct era_menu {
 
 int era_menu_load(struct era_menu *, SDL_Renderer *, const char *);
 SDL_Texture *era_title_shield(SDL_Renderer *, const char *root, const char *title, const char *religion);
+SDL_Texture *era_title_shield_big(SDL_Renderer *, const char *root, const char *title, const char *religion);
 void era_menu_free(struct era_menu *);
 void era_draw_portrait(const struct era_menu *, SDL_Renderer *, SDL_Texture *, char rank, SDL_Rect);
 void era_menu_draw(const struct era_menu *, SDL_Renderer *, const struct menu_assets *,

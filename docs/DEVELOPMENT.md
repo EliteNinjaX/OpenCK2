@@ -604,3 +604,57 @@ The [province and holding audit](EXE_RESEARCH.md#source-docs-reverse-engineering
 describes the columns, map-wide comparison, and duplicate-file fix.
 
 ---
+
+---
+
+## 2026-11-12 — HUD, heraldry and settlement visuals (C-only increment)
+
+**Reference:** user-supplied screenshots of OpenCK2 at the 1337 bookmark versus Crusader Kings II. **Implementation language:** C17. The original `interface/*.gui`/`*.gfx` in the user's CK2 installation remains authoritative; no retail assets are embedded in this project.
+
+### Changed source and observed problems
+
+| Source | Change | Status / remaining difference |
+|---|---|---|
+| `src/game/character_view.c/.h` | Bind original `domestic_dynastic.gui` `dynastic_shield` rectangle, render a separate shield from the main character title shield; use original `character_shield` anchor with the large mask rather than force a 55×62 offset. | **Visible fallback only:** dynastic coat of arms currently uses the ruler's primary title flag when present. This is NOT a reconstructed dynamic CK2 dynasty CoA. Requires `common/dynasties` pattern/template/color/texture generator and tests before parity. |
+| `src/game/era.c/.h` | Add large CK2 title-shield mask path (`shield_big_mask.tga`, pagan variant), retaining a medium-mask fallback if large texture is missing. | Title arms still depend on `gfx/flags/<title>.tga`; many CK2 titles use procedural CoAs, not a file. |
+| `src/game/main.c` | Add the current ruler's actual primary title shield to the topbar using `main.gui` `topbar_ruler_shield` coordinates instead of a hardcoded York flag. Also render the selected county's title shield in `province.gui` `pv_county_shield` coordinates. Cache selected titles and free on changes. | Verified source integration, not game-rendered. Requires compare at 769/867/1066/1337. |
+| `src/game/main.c` | Group the temporary Next Month and Main Menu buttons at the bottom center; remove the redundant `Realms / Terrain` toggle from `campaign_buttons`. | The existing 18 map-mode icons in the original minimap remain the normal map-mode controls. Buttons are OpenCK2 development UI, not recovered vanilla CK2 widgets. |
+| `src/game/campaign_hud.c/.h` | Render the three original `topbar_extension_*` backgrounds **before** character views; retain society icon source-defined position. | Test extension composition and overlap at supported scales/resolutions; some extensions may be conditional in original CK2. |
+| `src/game/campaign_hud.c/.h`, `src/game/setup_toolbar.c` | Load `alerts.gui` and `alerts.gfx`, including `alerticon_startposition`, `alerticon_offset`, and the original 69-frame `GFX_alerticons` sprite. Draw eight grayed, noninteractive placeholders; suppress map right-clicks underneath them; descriptive hover note. | **Not actual alerts**: original eligibility, ordering, priorities, and dynamic count are not implemented. Arbitrary sheet frames must not be described as gameplay alerts. |
+| `src/game/main.c`, `src/game/setup_toolbar.c` | Bind the original `province.gfx` culture variants of castle, city, tribal, temple (western-faith fallback), province settlement frame, and optional settlement-owner frame. Do not recolor originals arbitrarily. | Temple graphic depends on religion graphical culture, not yet determined; original `common/religions` resolver required. This concerns the province holdings panel. |
+| `src/game/main.c` | Replace zoomed map square holding thumbnails with cached **county title shields** wherever `gfx/flags/c_*.tga` exists. Use an LRU of 192 entries; keep old art if no title flag exists. | Original CK2 uses placed 3D settlement meshes, occasional heraldic icons and conditional visibility. This is a closer 2D interim visual, not full map parity. |
+| `src/game/assets.c/.h` | Remove hardcoded `gfx/flags/c_york.tga` load/fallback. | Prevents a bogus York shield when playing another ruler. |
+
+### Evidence classification
+
+- **Verified loose-file definition:** `domestic_dynastic.gui`: `character_shield`, `dynastic_shield`, `character_crown`; `main.gui`: `topbar_ruler_shield`, `topbar_ruler_crown`, `topbar_extension_0..2`; `province.gui`: `pv_county_shield`, `settlement_entry`, `settlement_placeholder`, `settlement_owner_frame`; `province.gfx`: settlement art families and variants; `alerts.gui`: `alerticon_window`, `alerticon_startposition` and `alerticon_offset`; `alerts.gfx`: `GFX_alerticons`, 69 frames.
+- **Source verified:** old character shield was clamped to main crown x and hardcoded 55×62; campaign title background used a York flag; old map markers drew generic holding-art textures; campaign action table contained an extra Realms/Terrain button.
+- **Provisional choice:** title-flag proxy for dynastic arms, eight grayed alert icons, 192-entry LRU, and development-button positions. These are documented replacements until CK2 behavior is verified.
+- **Not newly verified:** any executable function addresses or CK2's dynamic alert/coat-of-arms algorithms. Preserve existing `docs/EXE_RESEARCH.md` without extrapolating from filenames.
+
+### Checks
+
+- Passed: `make check-map-core check-ck2-map-data check-economy check-technology-console CFLAGS='-O2 -Werror'` (seven programs including map, economy, government, styles, positions, finance holdings, and technology/console).
+- Passed: targeted C17 syntax checks for `campaign_hud.c`, `character_view.c`, `era.c`, `setup_toolbar.c`, and `main.c` using **temporary incomplete SDL stubs**. This catches C syntax errors but is **not** a real SDL build and does not validate actual SDL types, links or renderer behavior.
+- Verified: all new sprite and widget identifiers exist in the supplied GUI/GFX files; these files are definitions only and don't include the required texture bytes.
+- Not run: full `make game` with installed SDL2, SDL2_image, SDL2_mixer, zlib and mounted CK2 assets, or an in-game comparison. Linux user should repeat the build.
+
+### Manual acceptance checklist
+
+- [ ] `make -B game CFLAGS='-O2 -g -Werror'` completes.
+- [ ] As King Edward in 1337: topbar, big title arms, character dynasty slot and left province shield are visible, correctly positioned, and do not cover the dynasty/character labels. Treat the dynasty-flag proxy as a known limitation.
+- [ ] Society extension background covers its icon without drawing over the character panel or date.
+- [ ] No second Realms/Terrain button appears. Terrain/Realms icons and `q`/`w` still work.
+- [ ] Next Month and Main Menu are adjacent and clickable; no map click leaks through them.
+- [ ] County map shields appear where title flags exist, with no massive stutter when panning and zooming; missing or generated flags gracefully use the existing fallback. Map holding name and owner hover still work.
+- [ ] Province settlement art uses different graphical culture variants where the game provides them; compare a western castle and a Muslim castle at the same zoom. Temple faith-dependent variants are still incomplete.
+- [ ] Eight grayed preview alerts render at the original alerts strip location and block map right-clicks. Their visual frames must not be interpreted as real conditions, and they don't support dismissal yet.
+- [ ] Confirm no regression to character tabs, Vassals, time advance, government tooltip, construction or the technology screen.
+
+### Next work (still C-first)
+
+1. **Dynamic dynasty CoA generator.** Parse `common/dynasties` `coat_of_arms` scripts plus the original palettes, layers, and patterns. Replace the temporary title flag, with explicit fixtures for Plantagenet and several non-Western dynasties.
+2. **Alert eligibility/priority.** Recover event conditions and data dependencies from CK2 executable evidence, then render only earned alerts rather than the eight placeholders.
+3. **True settlement meshes.** Connect `map/positions.txt`, `settlements.gfx`, graphical-culture actors, terrain transforms, and projected sprite/mesh LOD. Current county shields are not a 3D substitute.
+4. **Generated title shields.** Cover county/title/dynasty arms without prebuilt flag files and compare crown overlays and sizes.
+5. **Province panel faith-specific temple art.** Resolve religion graphical culture from authored data and use `GFX_settlement_temple_<culture>_<faith>` variants rather than the documented western fallback.

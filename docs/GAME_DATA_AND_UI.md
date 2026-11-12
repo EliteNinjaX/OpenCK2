@@ -331,3 +331,7 @@ since the last Apply. Hover over an unfinished control to see its status.
 - [ ] Multiplayer
 
 ---
+
+### Screenshot-match HUD / shield asset bindings (2026-11-12)
+
+OpenCK2 now binds `domestic_dynastic.gui`'s `dynastic_shield` separately from `character_shield`; the dynasty coat itself remains an explicitly labeled **title-flag proxy** until `common/dynasties` artwork is decoded. `main.gui` supplies `topbar_extension_0..2`, `topbar_ruler_shield`, and `topbar_ruler_crown`. `province.gui` supplies `pv_county_shield`, `settlement_entry`, `settlement_placeholder`, and `settlement_owner_frame`; `province.gfx` supplies culture-specific building placeholders and frames. `alerts.gui`/`alerts.gfx` supply the separate top-center alerts strip and its 69-frame sprite sheet. The eight grayed preview slots are **not** game-derived alerts. See `docs/DEVELOPMENT.md` for tests and replacement conditions. The original retail assets are loaded from the user's installed CK2 directory, not copied into this repository.

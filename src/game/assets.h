@@ -15,7 +15,7 @@ struct menu_assets {
     SDL_Texture *bottom_content, *compact_button, *compact_hover, *version_plate;
     SDL_Texture *dialog_frame, *dialog_heading;
     SDL_Texture *hud_ruler, *hud_resources_left, *hud_resources_right, *hud_date;
-    SDL_Texture *hud_minimap, *hud_map, *hud_province, *hud_outliner, *hud_arms;
+    SDL_Texture *hud_minimap, *hud_map, *hud_province, *hud_outliner;
     SDL_Texture *lobby_row, *lobby_tooltip, *religion_icons;
     SDL_Texture *holding_art[6], *holding_frame, *holding_capital;
     SDL_Texture *hud_tabs[8];
