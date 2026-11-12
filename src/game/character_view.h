@@ -14,7 +14,10 @@ struct character_relative {
 struct character_view {
     struct setup_widget background, family, close, tabs[6], frame, spouse_frame, spouse_plate, religion, crown, gold_icon;
     struct setup_widget stat_icons[RULER_STAT_COUNT];
-    SDL_Rect stat_values[RULER_STAT_COUNT], trait_area;
+    /* Optional original CK2 character-panel controls (visual placeholders). */
+    struct setup_widget extra_icons[16];
+    char extra_icon_labels[16][64];
+    SDL_Rect stat_values[RULER_STAT_COUNT], trait_area, combat_skill_area;
     int trait_step, trait_bonus[RULER_STAT_COUNT];
     int trait_modifiers[RULER_TRAIT_LIMIT][RULER_STAT_COUNT];
     struct setup_widget section_icons[4], prestige_icon, piety_icon;

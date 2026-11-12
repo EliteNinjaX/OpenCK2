@@ -44,6 +44,38 @@ int character_view_load(struct character_view *view, SDL_Renderer *renderer, con
     bool ok = panel >= 0 && info >= 0 && family >= 0;
     for (size_t i = 0; ok && i < SDL_arraysize(sprites); ++i)
         ok = bind_sprite(sprites[i].widget, &gui, sprites[i].parent, sprites[i].name, viewport, renderer, root);
+    /* These controls exist in the original GUI but were never bound by OpenCK2.
+       They remain visible even where their click actions are not implemented. */
+    static const struct { const char *name; const char *label; int parent; } extras[] = {
+        {"button_familytree", "Family tree (not implemented)", 0},
+        {"button_realmtree", "Realm tree (not implemented)", 0},
+        {"button_treasury", "Treasury (not implemented)", 0},
+        {"button_bloodlines", "Bloodlines (not implemented)", 0},
+        {"kill_list", "Kill list (not implemented)", 0},
+        {"barber_button", "Barber (not implemented)", 0},
+        {"government_icon", "Government", 1},
+        {"quick_ambition_button", "Ambition (not implemented)", 1},
+        {"quick_focus_button", "Focus (not implemented)", 1},
+        {"quick_plot_button", "Plot (not implemented)", 0},
+        {"toggle_forbidden_to_lead_armies", "Leading armies (toggle not implemented)", 0},
+        {"open_wonder_view", "Great Works (view not implemented)", 0},
+        {"icon_combat_skill", "Personal combat skill (data not loaded)", 1},
+        {"icon_artifact_modifier", "Artifact modifiers (not implemented)", 1},
+        {"icon_commandmodifier", "Commander modifiers (not implemented)", 1},
+        {"icon_diplomatic_relations", "Diplomatic relations (not implemented)", 1},
+    };
+    for (size_t i = 0; i < SDL_arraysize(extras); ++i) {
+        const int parent = extras[i].parent ? info : panel;
+        const int node = frontend_gui_find(&gui, parent, extras[i].name);
+        if (node >= 0) {
+            SDL_Rect area;
+            if (frontend_gui_rect(&gui, node, viewport, &area) &&
+                setup_widget_load_node(&view->extra_icons[i], renderer, root, &gui, node, area) == 0)
+                SDL_strlcpy(view->extra_icon_labels[i], extras[i].label, sizeof view->extra_icon_labels[i]);
+            else
+                SDL_ClearError(); /* Optional assets must not block the character screen. */
+        }
+    }
     const char *const labels[] = {
         "name", "born", "dynasty", "culture", "spouse_text",
         "family_text", "relations_text", "vassals_text", "courtiers_text", "pacts_text", "abroad_text",
@@ -62,6 +94,9 @@ int character_view_load(struct character_view *view, SDL_Renderer *renderer, con
             ++count;
         }
     }
+    /* Combat rating is independent of the five main stats. */
+    frontend_gui_rect(&gui, frontend_gui_find(&gui, info, "combat_skill"),
+                      viewport, &view->combat_skill_area);
     static const char *const sections[] = {"icon_traits", "icon_modifiers", "icon_titles", "icon_claims"};
     static const char *const resource_keys[RULER_RESOURCE_COUNT][2] = {
         {"STAT_WEALTH", "STAT_WEALTH_DESC"}, {"STAT_PRESTIGE", "STAT_PRESTIGE_DESC"},
@@ -475,6 +510,9 @@ void character_view_draw(const struct character_view *view, SDL_Renderer *render
     if (!view->show_vassals)
         draw_frame(&view->family, renderer, 0);
     setup_widget_draw(&view->close, renderer, pointer);
+    for (size_t i = 0; i < SDL_arraysize(view->extra_icons); ++i)
+        if (view->extra_icons[i].texture)
+            setup_widget_draw(&view->extra_icons[i], renderer, pointer);
     SDL_Rect area = view->portrait;
     area.w = area.h = 150;
     if (view->portrait_texture)
@@ -565,6 +603,11 @@ void character_view_draw(const struct character_view *view, SDL_Renderer *render
     const char *hover = NULL;
     const char *help = NULL;
     char stat_hint[128], stat_detail[4096], claim_hint[120], relation_hint[128], relation_name[240];
+    /* CK2 defines combat_skill separately from the five primary attributes.
+       Display an explicit unknown value until a verified source supplies it. */
+    if (view->combat_skill_area.w > 0)
+        text(renderer, assets, "-", 1, view->combat_skill_area.x + view->combat_skill_area.w / 2,
+             view->combat_skill_area.y);
     for (size_t i = 0; i < RULER_STAT_COUNT; ++i) {
         const SDL_Rect value = view->stat_values[i];
         const bool known = (view->ruler.known_stats & (1u << i)) != 0;
@@ -683,6 +726,12 @@ void character_view_draw(const struct character_view *view, SDL_Renderer *render
     for (size_t i = 1; i < SDL_arraysize(view->tabs); ++i)
         if (i != 2 && SDL_PointInRect(&pointer, &view->tabs[i].area))
             hover = "Not developed yet";
+    for (size_t i = 0; i < SDL_arraysize(view->extra_icons); ++i)
+        if (view->extra_icons[i].texture &&
+            SDL_PointInRect(&pointer, &view->extra_icons[i].area)) {
+            hover = view->extra_icon_labels[i];
+            help = "Original CK2 interface control; action not yet connected";
+        }
     if (hover && *hover)
         panel_tooltip(renderer, assets, pointer, hover, hover == stat_hint ? stat_detail : help, text);
 }
@@ -701,6 +750,8 @@ void character_view_free(struct character_view *view)
                                       &view->vassal_bg, &view->vassal_frame, &view->crown, &view->gold_icon, &view->title_crown, &view->strong_claim, &view->prestige_icon, &view->piety_icon};
     for (size_t i = 0; i < SDL_arraysize(sprites); ++i)
         SDL_DestroyTexture(sprites[i]->texture);
+    for (size_t i = 0; i < SDL_arraysize(view->extra_icons); ++i)
+        SDL_DestroyTexture(view->extra_icons[i].texture);
     for (size_t i = 0; i < SDL_arraysize(view->tabs); ++i)
         SDL_DestroyTexture(view->tabs[i].texture);
     for (size_t i = 0; i < RULER_STAT_COUNT; ++i)
