@@ -14,14 +14,19 @@ struct campaign_date {
 struct campaign {
     struct campaign_date date;
     unsigned treasury;
-    unsigned improvements;
+    unsigned improvements; /* Legacy construction/demo command, not a tax source. */
+    double gold_remainder, monthly_tax, prestige, piety;
+    double monthly_prestige, monthly_piety;
+    size_t demesne_count;
+    unsigned demesne_limit;
+    bool demesne_limit_known, monthly_tax_known;
 };
 
 void campaign_start(struct campaign *campaign);
 void campaign_advance_day(struct campaign *campaign);
 void campaign_advance_month(struct campaign *campaign);
 bool campaign_improve(struct campaign *campaign);
-unsigned campaign_monthly_income(const struct campaign *campaign);
+double campaign_monthly_income(const struct campaign *campaign);
 bool campaign_goal_met(const struct campaign *campaign);
 
 struct province {

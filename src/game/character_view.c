@@ -509,7 +509,7 @@ void panel_tooltip(SDL_Renderer *renderer, const struct menu_assets *assets, SDL
 }
 
 void character_view_draw(const struct character_view *view, SDL_Renderer *renderer,
-                         const struct menu_assets *assets, bool player, unsigned treasury, SDL_Point pointer, panel_text_fn text)
+                         const struct menu_assets *assets, bool player, const struct campaign *campaign, SDL_Point pointer, panel_text_fn text)
 {
     draw_frame(&view->background, renderer, 0);
     if (!view->show_vassals)
@@ -539,8 +539,12 @@ void character_view_draw(const struct character_view *view, SDL_Renderer *render
     SDL_SetTextureColorMod(assets->font, 35, 25, 15);
     for (size_t i = 0; i < RULER_RESOURCE_COUNT; ++i) {
         char amount[32] = "-";
-        if (i == RULER_WEALTH && player)
-            snprintf(amount, sizeof amount, "%u", treasury);
+        if (player && campaign && i == RULER_WEALTH)
+            snprintf(amount, sizeof amount, "%u", campaign->treasury);
+        else if (player && campaign && i == RULER_PRESTIGE)
+            snprintf(amount, sizeof amount, "%.0f", campaign->prestige);
+        else if (player && campaign && i == RULER_PIETY)
+            snprintf(amount, sizeof amount, "%.0f", campaign->piety);
         else if (view->ruler.known_resources & (1u << i))
             snprintf(amount, sizeof amount, "%.0f", view->ruler.resources[i]);
         draw_frame(icons[i], renderer, 0);

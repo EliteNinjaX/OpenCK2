@@ -19,9 +19,11 @@
 #include "map_modes.h"
 #include "campaign_hud.h"
 #include "map_settlements.h"
+#include "economy.h"
 
 #include <SDL_image.h>
 #include <errno.h>
+#include <limits.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <sys/wait.h>
@@ -153,6 +155,7 @@ struct menu {
     int topbar_offset;
     struct county_holdings holdings;
     struct construction construction;
+    struct economy_snapshot economy;
     SDL_Texture *building_bg, *building_row, *building_close, *settlement_bg;
     SDL_Texture *settlement_build, *settlement_hover;
     char settlement_headline[64], settlement_build_label[32], settlement_types[3][32];
@@ -1082,8 +1085,13 @@ static bool building_click(struct menu *menu, SDL_Point point)
 
 static void advance_campaign_day(struct menu *menu)
 {
-    campaign_advance_day(&menu->campaign);
     construction_day(&menu->construction);
+    /* Completed building projects affect the next monthly tax receipt. */
+    if (menu->campaign.date.day >= 28) {
+        economy_snapshot_refresh(&menu->economy, &menu->construction);
+        menu->campaign.monthly_tax = ck2_tax_monthly(menu->economy.annual_direct_tax);
+    }
+    campaign_advance_day(&menu->campaign);
     if (menu->selected)
         construction_settlement_apply(&menu->construction, menu->selected->id, &menu->holdings);
 }
@@ -1192,6 +1200,13 @@ static void draw_campaign_topbar(SDL_Renderer *renderer, const struct menu_asset
         char value[32] = "-";
         if (!i)
             SDL_strlcpy(value, gold, sizeof value);
+        else if (i == RULER_PRESTIGE)
+            snprintf(value, sizeof value, "%.0f", menu->campaign.prestige);
+        else if (i == RULER_PIETY)
+            snprintf(value, sizeof value, "%.0f", menu->campaign.piety);
+        else if (i == 3 && menu->campaign.demesne_limit_known)
+            snprintf(value, sizeof value, "%zu/%u", menu->campaign.demesne_count,
+                     menu->campaign.demesne_limit);
         else if (i < RULER_RESOURCE_COUNT && ruler && (ruler->known_resources & (1u << i)))
             snprintf(value, sizeof value, "%.0f", ruler->resources[i]);
         campaign_text(renderer, assets, value, area.x + area.w / 2, area.y - 2);
@@ -1214,9 +1229,30 @@ static void draw_topbar_tooltip(SDL_Renderer *renderer, const struct menu_assets
         area.h = menu->topbar[BAR_PAUSE].area.y;
         if (!SDL_PointInRect(&menu->pointer, &area))
             continue;
-        if (menu->topbar_labels[i][0])
+        if (menu->topbar_labels[i][0]) {
+            char details[900];
+            SDL_strlcpy(details, menu->topbar_help[i], sizeof details);
+            const size_t used = strlen(details);
+            if (i == 0)
+                snprintf(details + used, sizeof details - used,
+                         "\nDirect holding tax: %.2f gold/month\n"
+                         "Vassal taxes, laws and modifiers not yet included%s",
+                         menu->campaign.monthly_tax,
+                         menu->economy.holder_fallbacks ? "\nSome capital holders are inferred" : "");
+            else if (i == 1)
+                snprintf(details + used, sizeof details - used,
+                         "\nKnown monthly prestige: %+.2f (partial sources)", menu->campaign.monthly_prestige);
+            else if (i == 2)
+                snprintf(details + used, sizeof details - used,
+                         "\nKnown monthly piety: %+.2f (partial sources)", menu->campaign.monthly_piety);
+            else if (i == 3)
+                snprintf(details + used, sizeof details - used,
+                         "\nCounted personal holdings: %zu\n"
+                         "Limit excludes unmodeled laws/traits/game rules",
+                         menu->campaign.demesne_count);
             panel_tooltip(renderer, assets, menu->pointer, menu->topbar_labels[i],
-                          menu->topbar_help[i], centered_text);
+                          details, centered_text);
+        }
         return;
     }
 }
@@ -1333,11 +1369,12 @@ static void holding_tooltip(SDL_Renderer *renderer, const struct menu_assets *as
         holding_government_bit(m->type), &candidate, 1);
     const char *government = authored ? ruler->government_key :
         count == 1 && candidate ? candidate->id : "Not assigned (potential rules pending)";
-    SDL_snprintf(info, sizeof info, "Owner: %s%s\nHolding ID: %s\nCulture: %s\nGraphic: %s\n"
-        "Government: %s%s",
+    SDL_snprintf(info, sizeof info, "Owner: %s%s\nHolding ID: %s\nProvince culture: %s\n"
+        "Province religion: %s\nGraphic: %s\nGovernment: %s%s",
         m->owner[0] ? m->owner : "Not recorded",
         m->county_holder_fallback ? " (county holder fallback)" : "",
         m->holding_id, m->culture[0] ? m->culture : "Not recorded",
+        m->religion[0] ? m->religion : "Not recorded",
         m->actor_known ? m->actor : "No matching defined model",
         government, authored ? " (authored character history)" :
                     count == 1 ? " (candidate only)" : "");
@@ -1369,14 +1406,24 @@ static void panel_holding_tooltip(SDL_Renderer *renderer, const struct menu_asse
     struct realm_title_info barony = title;
     const bool recorded = realm_title_info(&menu->realms, holding->id, &barony) && barony.holder;
     const struct ruler_profile *owner = recorded ? realm_ruler(&menu->realms, barony.holder) : NULL;
-    char heading[176], details[340];
+    char heading[176], details[640];
     SDL_snprintf(heading, sizeof heading, "%s: %s", map_holding_type(holding->type),
                  holding->name[0] ? holding->name : holding->id);
+    double annual_tax = 0;
+    const bool tax_known = construction_holding_annual_tax(&menu->construction, holding, &annual_tax);
+    char tax_line[96];
+    if (tax_known)
+        SDL_snprintf(tax_line, sizeof tax_line, "%.2f / year before modifiers", annual_tax);
+    else SDL_strlcpy(tax_line, "No installed tax definition", sizeof tax_line);
     SDL_snprintf(details, sizeof details,
-                 "Barony: %s\nOwner: %s\nTitle holder: %s\nProvince: %s",
+                 "Barony: %s\nOwner: %s\nTitle holder: %s\nProvince: %s\n"
+                 "Culture: %s\nReligion: %s\nHistorical buildings: %zu\nBase + buildings: %s",
                  holding->id, owner && owner->name[0] ? owner->name : "Not recorded",
                  recorded ? "Recorded in title history" : "No explicit barony holder",
-                 menu->selected ? menu->selected->name : "Unknown");
+                 menu->selected ? menu->selected->name : "Unknown",
+                 menu->holdings.culture_name[0] ? menu->holdings.culture_name : "Not recorded",
+                 menu->holdings.religion_name[0] ? menu->holdings.religion_name : "Not recorded",
+                 holding->building_count, tax_line);
     panel_tooltip(renderer, assets, menu->pointer, heading, details, centered_text);
 }
 
@@ -1436,15 +1483,21 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
 
     if (menu->character.open) {
         character_view_draw(&menu->character, renderer, assets, menu->character.ruler.id == menu->campaign_ruler_id,
-                            menu->campaign.treasury, menu->pointer, centered_text);
+                            &menu->campaign, menu->pointer, centered_text);
     } else {
         const int center = 174;
         if (menu->selected)
             campaign_text(renderer, assets, menu->selected->name, center, 291);
         const bool owns_selection = menu->selected && menu->selected->id == menu->home_province;
         campaign_text(renderer, assets, owns_selection ? "Your county" : "Outside your county", 99, 349);
-        snprintf(line, sizeof line, "+%u gold per month", campaign_monthly_income(&menu->campaign));
+        snprintf(line, sizeof line, "+%.2f gold/month (direct)", campaign_monthly_income(&menu->campaign));
         campaign_text(renderer, assets, line, 99, 379);
+        snprintf(line, sizeof line, "Culture: %s", menu->holdings.culture_name[0] ?
+                 menu->holdings.culture_name : "Not in history");
+        campaign_text(renderer, assets, line, 147, 407);
+        snprintf(line, sizeof line, "Religion: %s", menu->holdings.religion_name[0] ?
+                 menu->holdings.religion_name : "Not in history");
+        campaign_text(renderer, assets, line, 147, 431);
         snprintf(line, sizeof line, "Holdings: %zu / %zu", menu->holdings.count, menu->holdings.capacity);
         SDL_SetTextureColorMod(assets->font, 36, 26, 16);
         campaign_text(renderer, assets, line, center, 600);
@@ -1509,12 +1562,18 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
                 const struct ruler_profile *liege = realm ? realm_ruler(&menu->realms, independent.holder) : NULL;
                 char heading[224], details[768];
                 snprintf(heading, sizeof heading, "%s (province %u)", province->name, province->id);
+                const struct map_province_facts *facts =
+                    index < menu->settlement_scene.province_fact_count ?
+                    &menu->settlement_scene.province_facts[index] : NULL;
                 snprintf(details, sizeof details,
-                         "County: %s\nOwner: %s\nIndependent realm: %s\nTop liege: %s%s%s",
+                         "County: %s\nOwner: %s\nIndependent realm: %s\nTop liege: %s\n"
+                         "Culture: %s\nReligion: %s%s%s",
                          owned ? county.name : "Not available",
                          holder && holder->name[0] ? holder->name : "Not available",
                          realm ? independent.name : "Not available",
                          liege && liege->name[0] ? liege->name : "Not available",
+                         facts && facts->culture[0] ? facts->culture : "Not recorded",
+                         facts && facts->religion[0] ? facts->religion : "Not recorded",
                          owned && county.holder ? "\nRight-click: view county holder" : "",
                          realm && independent.holder ? "\nShift + right-click: view top liege" : "");
                 panel_tooltip(renderer, assets, menu->pointer, heading, details, centered_text);
@@ -2003,10 +2062,54 @@ static void open_campaign(struct menu *menu, SDL_Window *window, bool new_game)
     }
     if (!load_realms(menu, window, menu->start_date))
         menu->realms_visible = false;
+    if ((new_game || !menu->economy.direct_holdings) && menu->realms.history) {
+        if (economy_snapshot_build(&menu->economy, menu->asset_root, &menu->provinces,
+                                    &menu->realms, &menu->construction, menu->campaign_ruler_id,
+                                    menu->start_date) == 0) {
+            menu->campaign.monthly_tax = ck2_tax_monthly(menu->economy.annual_direct_tax);
+            menu->campaign.monthly_tax_known = menu->economy.missing_tax_definitions == 0;
+            menu->campaign.monthly_prestige = menu->economy.monthly_prestige;
+            menu->campaign.monthly_piety = menu->economy.monthly_piety;
+            menu->campaign.demesne_count = menu->economy.direct_count;
+            menu->campaign.demesne_limit = menu->economy.demesne_limit;
+            menu->campaign.demesne_limit_known = menu->economy.has_demesne_limit;
+            SDL_Log("Economy bookmark snapshot: %zu personal holdings (%u county-holder fallbacks), "
+                    "%.2f direct annual tax, %.2f monthly prestige, %.2f monthly piety; "
+                    "%u holdings missing base tax definitions",
+                    menu->economy.direct_count, menu->economy.holder_fallbacks,
+                    menu->economy.annual_direct_tax, menu->economy.monthly_prestige,
+                    menu->economy.monthly_piety, menu->economy.missing_tax_definitions);
+        } else SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Economy snapshot unavailable");
+    }
+    if (new_game) {
+        const struct ruler_profile *r = realm_ruler(&menu->realms, menu->campaign_ruler_id);
+        if (r) {
+            if ((r->known_resources & (1u << RULER_WEALTH)) && r->resources[RULER_WEALTH] >= 0) {
+                const double money = r->resources[RULER_WEALTH];
+                menu->campaign.treasury = money >= UINT_MAX ? UINT_MAX : (unsigned)money;
+                menu->campaign.gold_remainder = money >= UINT_MAX ? 0 : money - menu->campaign.treasury;
+            }
+            if (r->known_resources & (1u << RULER_PRESTIGE))
+                menu->campaign.prestige = r->resources[RULER_PRESTIGE];
+            if (r->known_resources & (1u << RULER_PIETY))
+                menu->campaign.piety = r->resources[RULER_PIETY];
+        }
+    }
     if ((new_game || !menu->settlement_scene.markers) && menu->realms.history &&
         map_settlements_build(&menu->settlement_scene, menu->asset_root,
                               &menu->provinces, &menu->realms, menu->start_date) < 0)
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Map settlements unavailable: %s", SDL_GetError());
+    if (new_game && menu->settlement_scene.province_facts) {
+        size_t cultures = 0, religions = 0, histories = 0;
+        for (size_t i = 0; i < menu->settlement_scene.province_fact_count; ++i) {
+            const struct map_province_facts *facts = menu->settlement_scene.province_facts + i;
+            histories += facts->loaded;
+            cultures += facts->culture[0] != 0;
+            religions += facts->religion[0] != 0;
+        }
+        SDL_Log("Province history audit: %zu files loaded, %zu culture keys, %zu religion keys",
+                histories, cultures, religions);
+    }
     load_campaign_topbar(menu);
     campaign_hud_ui_load(&menu->hud_ui, menu->renderer, menu->asset_root,
                          (SDL_Point){WIDTH, HEIGHT});
@@ -3059,6 +3162,7 @@ cleanup:
     portraits_close(&menu.portrait_source);
     rules_free(&menu.rules);
     map_settlements_free(&menu.settlement_scene);
+    economy_snapshot_free(&menu.economy);
     realm_map_free(&menu.realms);
     era_menu_free(&menu.era);
     setup_toolbar_free(&menu.toolbar);

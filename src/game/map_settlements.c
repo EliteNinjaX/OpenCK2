@@ -7,39 +7,6 @@
 #include <string.h>
 #include <stdio.h>
 
-static int when_date(struct token value)
-{
-    char text[32]; int y, m, d;
-    copy_token(text, sizeof text, value);
-    return sscanf(text, "%d.%d.%d", &y, &m, &d) == 3 && y > 0 && m > 0 && d > 0
-        ? y * 10000 + m * 100 + d : -1;
-}
-
-static void province_culture(char result[64], const char *data, struct campaign_date date)
-{
-    int best = -1;
-    const int cutoff = date.year * 10000 + date.month * 100 + date.day;
-    for (const char *p = data; p && *p;) {
-        const struct token key = token(&p);
-        if (!key.size || !is(token(&p), "=")) break;
-        const struct token value = token(&p);
-        if (is(key, "culture") && !is(value, "{")) {
-            if (best < 0) copy_token(result, 64, value);
-            continue;
-        }
-        if (!is(value, "{")) continue;
-        const int when = when_date(key);
-        if (when >= 0 && when <= cutoff && when >= best) {
-            const struct token culture = field(p, "culture");
-            if (culture.size) {
-                copy_token(result, 64, culture);
-                best = when;
-            }
-        }
-        skip_block(&p);
-    }
-}
-
 static void load_styles(struct map_settlement_scene *scene, const char *root)
 {
     struct ck2_asset_files files = ck2_list_assets(root, "common/cultures");
@@ -142,7 +109,12 @@ int map_settlements_build(struct map_settlement_scene *scene, const char *root,
     map_settlements_free(scene);
     scene->date = date;
     scene->markers = calloc(provinces->count, sizeof *scene->markers);
-    if (!scene->markers) return SDL_OutOfMemory();
+    scene->province_facts = calloc(provinces->count, sizeof *scene->province_facts);
+    scene->province_fact_count = provinces->count;
+    if (!scene->markers || !scene->province_facts) {
+        map_settlements_free(scene);
+        return SDL_OutOfMemory();
+    }
     load_styles(scene, root);
     if (governments_load(&scene->governments, root) < 0)
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Government definitions unavailable: %s", SDL_GetError());
@@ -153,13 +125,19 @@ int map_settlements_build(struct map_settlement_scene *scene, const char *root,
         if (!history) continue;
         struct county_holdings county;
         holdings_read(&county, history, date);
+        scene->province_facts[i].loaded = true;
+        SDL_strlcpy(scene->province_facts[i].culture, county.culture_key,
+                    sizeof scene->province_facts[i].culture);
+        SDL_strlcpy(scene->province_facts[i].religion, county.religion_key,
+                    sizeof scene->province_facts[i].religion);
         if (county.count) {
             struct map_settlement_marker *m = scene->markers + scene->count;
             const struct holding *capital = county.slots;
             m->province_id = p->id;
             m->type = capital->type;
             SDL_strlcpy(m->holding_id, capital->id, sizeof m->holding_id);
-            province_culture(m->culture, history, date);
+            SDL_strlcpy(m->culture, county.culture_key, sizeof m->culture);
+            SDL_strlcpy(m->religion, county.religion_key, sizeof m->religion);
             struct realm_title_info title;
             if (realm_title_info(realms, capital->id, &title) && title.holder) {
                 m->holder_id = title.holder;
@@ -174,8 +152,8 @@ int map_settlements_build(struct map_settlement_scene *scene, const char *root,
                 const struct ruler_profile *owner = realm_ruler(realms, m->holder_id);
                 if (owner) {
                     SDL_strlcpy(m->owner, owner->name, sizeof m->owner);
-                    if (m->owner_known && owner->culture_key[0])
-                        SDL_strlcpy(m->culture, owner->culture_key, sizeof m->culture);
+                    /* CK2 province history is the cultural source for this
+                     * map snapshot, not the ruler's unrelated personal culture. */
                 }
             }
             ++scene->count;
@@ -227,6 +205,7 @@ void map_settlements_free(struct map_settlement_scene *scene)
 {
     if (!scene) return;
     free(scene->markers);
+    free(scene->province_facts);
     settlement_styles_destroy(&scene->styles);
     government_catalog_destroy(&scene->governments);
     *scene = (struct map_settlement_scene){0};

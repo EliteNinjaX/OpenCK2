@@ -10,15 +10,21 @@
  * pass. Later: multiple holding anchors and mesh/model instances. */
 struct map_settlement_marker {
     unsigned province_id, holder_id;
-    char holding_id[72], name[96], owner[96], culture[64], graphical[64], actor[112];
+    char holding_id[72], name[96], owner[96], culture[64], religion[64], graphical[64], actor[112];
     enum holding_type type;
     float x, y;
     unsigned rgb;
     bool owner_known, county_holder_fallback, culture_color_known, actor_known;
 };
+/* Province history is distinct from a holding owner's personal culture or faith. */
+struct map_province_facts {
+    char culture[64], religion[64];
+    bool loaded;
+};
 struct map_settlement_scene {
     struct map_settlement_marker *markers;
-    size_t count;
+    struct map_province_facts *province_facts; /* indexed by province_map.provinces */
+    size_t count, province_fact_count;
     struct campaign_date date;
     struct settlement_styles styles;
     struct government_catalog governments;

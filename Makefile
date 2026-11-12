@@ -7,12 +7,12 @@ all: game
 GAME := $(BUILD_DIR)/OpenCK2
 CONTENT_CATALOG := src/open_launcher/asset_paths.c src/open_launcher/zip_assets.c src/open_launcher/install.c src/open_launcher/catalog.c
 CONTENT_HEADERS := src/open_launcher/zip_assets.h src/open_launcher/asset_paths.h src/open_launcher/install.h src/open_launcher/catalog.h
-GAME_SOURCES := src/game/map_interaction.c src/game/map_modes.c src/game/campaign_hud.c src/game/ck2_lexer_core.c src/game/government_core.c src/game/governments.c src/game/settlement_styles.c src/game/map_positions.c src/game/map_settlements.c src/game/main.c src/game/character_view.c src/game/assets.c src/game/music.c src/game/settings.c src/game/era.c src/game/portraits.c src/game/ck2_script.c src/game/bloodline.c src/game/rules.c src/game/realms.c src/game/holdings.c src/game/construction.c src/game/rulers.c src/game/campaign.c src/game/map_view.c src/game/models.c src/game/setup_toolbar.c src/game/frontend_gui.c $(CONTENT_CATALOG)
+GAME_SOURCES := src/game/map_interaction.c src/game/map_modes.c src/game/campaign_hud.c src/game/ck2_lexer_core.c src/game/government_core.c src/game/governments.c src/game/settlement_styles.c src/game/map_positions.c src/game/map_settlements.c src/game/economy_core.c src/game/economy.c src/game/main.c src/game/character_view.c src/game/assets.c src/game/music.c src/game/settings.c src/game/era.c src/game/portraits.c src/game/ck2_script.c src/game/bloodline.c src/game/rules.c src/game/realms.c src/game/holdings.c src/game/construction.c src/game/rulers.c src/game/campaign.c src/game/map_view.c src/game/models.c src/game/setup_toolbar.c src/game/frontend_gui.c $(CONTENT_CATALOG)
 
 .PHONY: game
 game: open-launcher
 
-$(GAME): $(GAME_SOURCES) src/game/map_interaction.h src/game/map_modes.h src/game/campaign_hud.h src/game/ck2_lexer_core.h src/game/government_core.h src/game/governments.h src/game/settlement_styles.h src/game/map_positions.h src/game/map_settlements.h src/game/character_view.h src/game/assets.h src/game/music.h src/game/settings.h src/game/era.h src/game/portraits.h src/game/ck2_script.h src/game/bloodline.h src/game/rules.h src/game/realms.h src/game/holdings.h src/game/construction.h src/game/rulers.h src/game/campaign.h src/game/map_view.h src/game/models.h src/game/setup_toolbar.h src/game/frontend_gui.h src/version.h $(CONTENT_HEADERS) Makefile
+$(GAME): $(GAME_SOURCES) src/game/map_interaction.h src/game/map_modes.h src/game/campaign_hud.h src/game/ck2_lexer_core.h src/game/government_core.h src/game/governments.h src/game/settlement_styles.h src/game/map_positions.h src/game/map_settlements.h src/game/economy_core.h src/game/economy.h src/game/character_view.h src/game/assets.h src/game/music.h src/game/settings.h src/game/era.h src/game/portraits.h src/game/ck2_script.h src/game/bloodline.h src/game/rules.h src/game/realms.h src/game/holdings.h src/game/construction.h src/game/rulers.h src/game/campaign.h src/game/map_view.h src/game/models.h src/game/setup_toolbar.h src/game/frontend_gui.h src/version.h $(CONTENT_HEADERS) Makefile
 	mkdir -p "$(@D)"
 	$(CC) $(CPPFLAGS) $(CFLAGS) -std=c17 -Wall -Wextra -Wpedantic \
 		$$(pkg-config --cflags sdl2 SDL2_image SDL2_mixer zlib) $(LDFLAGS) -o "$@" $(GAME_SOURCES) \
@@ -148,3 +148,22 @@ $(BUILD_DIR)/map-positions-test: tests/map-positions.c src/game/map_positions.c 
 	mkdir -p "$(@D)"
 	$(CC) $(CPPFLAGS) $(CFLAGS) -std=c17 -Wall -Wextra -Wpedantic -o "$@" tests/map-positions.c src/game/map_positions.c src/game/ck2_lexer_core.c $(LDLIBS)
 check-ck2-map-data: check-governments-core check-settlement-styles check-map-positions
+
+# Portable economy parsing test, plus SDL-free holding history/tax fixture.
+.PHONY: check-economy-core check-finance-holdings check-economy
+check-economy-core: $(BUILD_DIR)/economy-core-test
+	"$(BUILD_DIR)/economy-core-test"
+$(BUILD_DIR)/economy-core-test: tests/economy-core.c src/game/economy_core.c src/game/economy_core.h Makefile
+	mkdir -p "$(@D)"
+	$(CC) $(CPPFLAGS) $(CFLAGS) -std=c17 -Wall -Wextra -Wpedantic -Werror -Isrc/game -o "$@" tests/economy-core.c src/game/economy_core.c -lm
+
+# The small stub exposes types only. Unused SDL/game-data entry points are
+# removed at link time; tax/history assertions exercise real production code.
+check-finance-holdings: $(BUILD_DIR)/finance-holdings-test
+	"$(BUILD_DIR)/finance-holdings-test"
+$(BUILD_DIR)/finance-holdings-test: tests/finance-holdings.c src/game/holdings.c src/game/construction.c src/game/ck2_script.c Makefile
+	mkdir -p "$(@D)"
+	$(CC) $(CPPFLAGS) $(CFLAGS) -std=c17 -Wall -Wextra -Wpedantic -Werror -ffunction-sections -fdata-sections \
+		-Itests/stubs -Isrc/game -o "$@" tests/finance-holdings.c src/game/holdings.c \
+		src/game/construction.c src/game/ck2_script.c -Wl,--gc-sections -lm
+check-economy: check-economy-core check-finance-holdings

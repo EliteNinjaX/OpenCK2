@@ -4,6 +4,8 @@
 
 #include <ctype.h>
 #include <limits.h>
+#include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +38,18 @@ static unsigned positive_integer(struct token value)
         result = result * 10 + (unsigned)digit;
     }
     return result;
+}
+
+static bool parse_real(struct token value, double *out)
+{
+    char raw[64], *end;
+    if (!value.size || value.size >= sizeof raw) return false;
+    copy_token(raw, sizeof raw, value);
+    errno = 0;
+    double amount = strtod(raw, &end);
+    if (errno || *end || !isfinite(amount)) return false;
+    *out = amount;
+    return true;
 }
 
 static bool zero_tech(const char *p)
@@ -79,6 +93,10 @@ static bool read_buildings(struct construction *state, const char *p)
                     building.gold = positive_integer(value);
                 else if (is(key, "build_time"))
                     building.days = positive_integer(value);
+                else if (is(key, "tax_income"))
+                    (void)parse_real(value, &building.annual_tax);
+                else if (is(key, "upgrades_from"))
+                    copy_token(building.upgrades_from, sizeof building.upgrades_from, value);
                 else if (is(key, "trigger"))
                     building.supported &= is(value, "{") && zero_tech(body);
                 else if (is(key, "potential") || is(key, "is_active_trigger") ||
@@ -154,6 +172,16 @@ static void read_settlement_rules(struct construction *state, const char *root)
 
     char *modifiers = load_data(root, "common/static_modifiers.txt");
     char *types = load_data(root, "common/holding_types/00_holding_types.txt");
+    for (int i = HOLDING_CASTLE; modifiers && i < HOLDING_TYPE_COUNT; ++i) {
+        const char *tax = modifiers;
+        if (is(find(&tax, type_ids[i]), "{")) {
+            double value;
+            if (parse_real(field(tax, "tax_income"), &value)) {
+                state->holding_base_tax[i] = value;
+                state->holding_base_tax_known[i] = true;
+            }
+        }
+    }
     for (int i = HOLDING_CASTLE; modifiers && types && i <= HOLDING_TEMPLE; ++i) {
         const char *body = modifiers, *type = types;
         if (!is(find(&body, type_ids[i]), "{") || !is(find(&type, type_ids[i]), "{") ||
@@ -447,4 +475,65 @@ bool construction_owns_settlement(const struct construction *state, const char *
         if (!state->settlements[i].days && !strcmp(state->settlements[i].holding.id, holding))
             return true;
     return false;
+}
+
+/* The most advanced member of an upgrade chain replaces its predecessor.
+ * A zero tax_income means that building contributes no direct annual gold. */
+static bool replaces(const struct construction *state, size_t later, size_t former)
+{
+    const struct building *next = &state->catalog[later];
+    for (size_t depth = 0; depth < 64 && next->upgrades_from[0]; ++depth) {
+        if (!strcmp(next->upgrades_from, state->catalog[former].id)) return true;
+        const struct building *parent = NULL;
+        for (size_t i = 0; i < state->count; ++i)
+            if (!strcmp(state->catalog[i].id, next->upgrades_from)) {
+                parent = &state->catalog[i];
+                break;
+            }
+        if (!parent || parent == next) break;
+        next = parent;
+    }
+    return false;
+}
+
+bool construction_holding_annual_tax(const struct construction *state,
+                                     const struct holding *holding, double *result)
+{
+    if (!state || !holding || !result || holding->type <= HOLDING_EMPTY ||
+        holding->type >= HOLDING_TYPE_COUNT || !state->holding_base_tax_known[holding->type])
+        return false;
+    size_t indices[HOLDING_BUILDING_LIMIT + 128], n = 0;
+    for (size_t b = 0; b < holding->building_count; ++b) {
+        for (size_t i = 0; i < state->count; ++i) {
+            if (state->catalog[i].type != holding->type ||
+                strcmp(state->catalog[i].id, holding->buildings[b])) continue;
+            size_t k;
+            for (k = 0; k < n && indices[k] != i; ++k) { }
+            if (k == n && n < SDL_arraysize(indices)) indices[n++] = i;
+            break;
+        }
+    }
+    /* Construction in the running campaign is kept in the existing project
+     * list. History-loaded projects will match the above IDs and deduplicate. */
+    for (size_t p = 0; p < state->project_count; ++p) {
+        const struct building_project *project = &state->projects[p];
+        if (project->days || strcmp(project->holding, holding->id) ||
+            project->index >= state->count || state->catalog[project->index].type != holding->type)
+            continue;
+        size_t k;
+        for (k = 0; k < n && indices[k] != project->index; ++k) { }
+        if (k == n && n < SDL_arraysize(indices)) indices[n++] = project->index;
+    }
+    double annual = state->holding_base_tax[holding->type];
+    for (size_t k = 0; k < n; ++k) {
+        bool upgraded = false;
+        for (size_t j = 0; j < n; ++j)
+            if (k != j && replaces(state, indices[j], indices[k])) {
+                upgraded = true;
+                break;
+            }
+        if (!upgraded) annual += state->catalog[indices[k]].annual_tax;
+    }
+    *result = annual < 0 ? 0 : annual;
+    return true;
 }

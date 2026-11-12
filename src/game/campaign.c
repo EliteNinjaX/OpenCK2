@@ -4,18 +4,19 @@
 #include "../open_launcher/install.h"
 
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 void campaign_start(struct campaign *campaign)
 {
-    *campaign = (struct campaign){.date = {1066, 9, 15}, .treasury = 50};
+    *campaign = (struct campaign){.date = {1066, 9, 15}};
 }
 
-unsigned campaign_monthly_income(const struct campaign *campaign)
+double campaign_monthly_income(const struct campaign *campaign)
 {
-    return 5 + 2 * campaign->improvements;
+    return campaign->monthly_tax;
 }
 
 static int days_in_month(struct campaign_date date)
@@ -40,11 +41,22 @@ void campaign_advance_day(struct campaign *campaign)
     } else {
         ++date->month;
     }
-    const unsigned income = campaign_monthly_income(campaign);
-    if (campaign->treasury <= UINT_MAX - income)
-        campaign->treasury += income;
-    else
-        campaign->treasury = UINT_MAX;
+    /* Preserve fractional tax without awarding spurious full gold every
+     * month. Expenditure still uses the legacy integer treasury interface. */
+    const double income = campaign_monthly_income(campaign);
+    if (isfinite(income) && income > 0) {
+        const double available = campaign->gold_remainder + income;
+        const unsigned whole = available >= UINT_MAX ? UINT_MAX : (unsigned)floor(available + 1e-9);
+        if (whole >= UINT_MAX - campaign->treasury) {
+            campaign->treasury = UINT_MAX;
+            campaign->gold_remainder = 0;
+        } else {
+            campaign->treasury += whole;
+            campaign->gold_remainder = available - whole;
+        }
+    }
+    if (isfinite(campaign->monthly_prestige)) campaign->prestige += campaign->monthly_prestige;
+    if (isfinite(campaign->monthly_piety)) campaign->piety += campaign->monthly_piety;
 }
 
 void campaign_advance_month(struct campaign *campaign)

@@ -68,7 +68,7 @@ typedef void (*panel_text_fn)(SDL_Renderer *, const struct menu_assets *, const 
 void panel_tooltip(SDL_Renderer *, const struct menu_assets *, SDL_Point, const char *, const char *, panel_text_fn);
 const struct ruler_profile *character_view_pick(const struct character_view *, SDL_Point, unsigned *);
 void character_view_draw(const struct character_view *, SDL_Renderer *, const struct menu_assets *,
-                         bool, unsigned, SDL_Point, panel_text_fn);
+                         bool, const struct campaign *, SDL_Point, panel_text_fn);
 void character_view_free(struct character_view *);
 
 #endif

@@ -14,6 +14,16 @@ static enum holding_type type_for(struct token value)
 
 static void update(struct county_holdings *county, struct token key, struct token value, int when)
 {
+    if (is(key, "culture") && when >= county->culture_date) {
+        copy_token(county->culture_key, sizeof county->culture_key, value);
+        county->culture_date = when;
+        return;
+    }
+    if (is(key, "religion") && when >= county->religion_date) {
+        copy_token(county->religion_key, sizeof county->religion_key, value);
+        county->religion_date = when;
+        return;
+    }
     if (is(key, "max_settlements")) {
         if (when >= county->capacity_date) {
             const unsigned capacity = number(value);
@@ -36,7 +46,10 @@ static void update(struct county_holdings *county, struct token key, struct toke
     if (key.size < 3 || key.start[0] != 'b' || key.start[1] != '_')
         return;
     const enum holding_type type = type_for(value);
-    if (!type && !is(value, "none") && !is(value, "no"))
+    const bool settlement = type || is(value, "none") || is(value, "no");
+    /* A b_ assignment can designate either the holding's type or an already
+     * built improvement. CK2 province history uses both forms. */
+    if (!settlement && (!value.size || value.size >= sizeof county->slots[0].buildings[0]))
         return;
     size_t i = 0;
     while (i < county->count && !is(key, county->slots[i].id))
@@ -47,9 +60,18 @@ static void update(struct county_holdings *county, struct token key, struct toke
         ++county->count;
         copy_token(county->slots[i].id, sizeof county->slots[i].id, key);
     }
-    if (when >= county->slots[i].effective) {
+    if (!settlement) {
+        /* A building alone cannot create a new holding of unknown type. The
+         * assignment is kept until the holding's type is resolved. */
+        struct holding *slot = &county->slots[i];
+        for (size_t b = 0; b < slot->building_count; ++b)
+            if (is(value, slot->buildings[b])) return;
+        if (slot->building_count < HOLDING_BUILDING_LIMIT)
+            copy_token(slot->buildings[slot->building_count++], sizeof slot->buildings[0], value);
+    } else if (when >= county->slots[i].effective) {
         county->slots[i].effective = when;
         county->slots[i].type = type;
+        if (!type) county->slots[i].building_count = 0;
     }
 }
 
@@ -109,11 +131,22 @@ void holdings_load(struct county_holdings *county, const char *root, const struc
     holdings_read(county, data, date);
     SDL_free(data);
     const size_t count = county->count;
-    struct ck2_translation terms[HOLDING_LIMIT];
+    struct ck2_translation terms[HOLDING_LIMIT + 2];
     for (size_t i = 0; i < count; ++i) {
         struct holding *slot = &county->slots[i];
         terms[i] = (struct ck2_translation){slot->id, slot->name, sizeof slot->name};
     }
-    if (count)
-        ck2_translate(root, terms, count);
+    size_t translated = count;
+    if (county->culture_key[0]) {
+        SDL_strlcpy(county->culture_name, county->culture_key, sizeof county->culture_name);
+        terms[translated++] = (struct ck2_translation){county->culture_key,
+                                 county->culture_name, sizeof county->culture_name};
+    }
+    if (county->religion_key[0]) {
+        SDL_strlcpy(county->religion_name, county->religion_key, sizeof county->religion_name);
+        terms[translated++] = (struct ck2_translation){county->religion_key,
+                                 county->religion_name, sizeof county->religion_name};
+    }
+    if (translated)
+        ck2_translate(root, terms, translated);
 }
