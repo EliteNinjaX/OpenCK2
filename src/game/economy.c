@@ -1,5 +1,6 @@
 #include "economy.h"
 #include "ck2_script.h"
+#include "title_prestige.h"
 #include <math.h>
 #include <stdint.h>
 #include <limits.h>
@@ -51,20 +52,12 @@ static bool known_direct_holding(const struct economy_snapshot *economy, const c
     return false;
 }
 
-static unsigned title_rank(const char *id)
-{
-    if (!id || id[1] != '_') return 0;
-    static const char ranks[] = "bcdke";
-    const char *p = strchr(ranks, id[0]);
-    return p ? (unsigned)(p - ranks) + 1 : 0;
-}
-
 static void calculate_rates(struct economy_snapshot *economy, const struct realm_map *realms,
                             unsigned ruler_id)
 {
     const struct ruler_profile *r = realm_ruler(realms, ruler_id);
     struct realm_title_info primary;
-    const unsigned rank = realm_primary_title(realms, ruler_id, &primary) ? title_rank(primary.id) : 0;
+    const unsigned rank = realm_primary_title(realms, ruler_id, &primary) ? ck2_title_rank(primary.id) : 0;
     if (economy->defines.demesne_ready && rank) {
         const int stewardship = r && (r->known_stats & (1u << RULER_STEWARDSHIP))
             ? r->stats[RULER_STEWARDSHIP] : 0;
@@ -75,7 +68,7 @@ static void calculate_rates(struct economy_snapshot *economy, const struct realm
         const size_t n = realm_held_titles(realms, ruler_id, held, 512);
         size_t duchies = 0;
         for (size_t i = 0; i < n; ++i)
-            duchies += title_rank(held[i].id) == 3;
+            duchies += ck2_title_rank(held[i].id) == 3;
         economy->demesne_limit = ck2_demesne_base_limit(&economy->defines, rank,
                 stewardship, spouse_ste, rank == 3 && duchies > 1);
         economy->has_demesne_limit = true;
@@ -84,19 +77,20 @@ static void calculate_rates(struct economy_snapshot *economy, const struct realm
         struct realm_title_info held[512];
         size_t n = realm_held_titles(realms, ruler_id, held, 512);
         for (size_t i = 0; i < n; ++i) {
-            const unsigned tier = title_rank(held[i].id);
-            if (tier) economy->monthly_prestige += economy->defines.prestige_title[tier - 1];
+            const unsigned tier = ck2_title_rank(held[i].id);
+            if (tier) ck2_title_prestige_add(&economy->title_prestige, held[i].id, false, economy->defines.prestige_title);
         }
         struct realm_title_info vassals[64];
         size_t total, offset = 0;
         do {
             total = realm_direct_vassals(realms, ruler_id, offset, vassals, 64);
             for (size_t i = 0; i < 64 && i + offset < total; ++i) {
-                const unsigned tier = title_rank(vassals[i].id);
-                if (tier) economy->monthly_prestige += economy->defines.prestige_vassal[tier - 1];
+                const unsigned tier = ck2_title_rank(vassals[i].id);
+                if (tier) ck2_title_prestige_add(&economy->title_prestige, vassals[i].id, true, economy->defines.prestige_vassal);
             }
             offset += 64;
         } while (offset < total && offset < 8192);
+        economy->monthly_prestige += economy->title_prestige.total_monthly;
         economy->has_prestige_rate = true;
     }
     if (r && economy->defines.attributes_ready) {

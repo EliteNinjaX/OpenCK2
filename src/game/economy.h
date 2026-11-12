@@ -3,6 +3,7 @@
 #include "construction.h"
 #include "realms.h"
 #include "economy_core.h"
+#include "title_prestige.h"
 
 struct economy_snapshot {
     struct holding *direct_holdings;
@@ -16,6 +17,7 @@ struct economy_snapshot {
     unsigned demesne_limit;
     bool has_demesne_limit, has_prestige_rate, has_piety_rate;
     struct ck2_economy_defines defines;
+    struct title_prestige_ledger title_prestige;
 };
 /* Snapshot uses the selected bookmark's province/title history, not live
  * territorial changes. Income is direct holdings only; no unverified feudal

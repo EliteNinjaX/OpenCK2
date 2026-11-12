@@ -190,6 +190,7 @@ struct menu {
     enum lobby_element scroll_list;
     SDL_Cursor *game_cursor;
     SDL_Rect holding_panel, holding_rows[2], holding_capital, holding_templates[2];
+    struct setup_widget province_close;
     SDL_Rect holding_art_area[2], holding_frame_area[2], holding_owner_frame_area[2];
     bool holding_owner_frame_valid[2];
     SDL_Texture *holding_owner_frame_texture;
@@ -229,6 +230,12 @@ struct menu {
 static bool campaign_map_interactive(const struct menu *menu, SDL_Point point)
 {
     if (!campaign_map_area(point))
+        return false;
+    if (menu->selected && !menu->character.open &&
+        point.x >= menu->holding_panel.x &&
+        point.x < menu->holding_panel.x + 345 &&
+        point.y >= menu->holding_panel.y &&
+        point.y < HEIGHT)
         return false;
     /* Both developer controls also occupy map coordinates; they must
      * block province selection and right-click owner navigation. */
@@ -702,6 +709,16 @@ static int load_holding_layout(struct menu *menu, SDL_Texture *background)
                  frontend_gui_rect(&gui, capital, viewport, &menu->holding_capital);
     frontend_gui_rect(&gui, frontend_gui_find(&gui, panel, "pv_county_shield"),
                       viewport, &menu->province_shield_area);
+    /* The original province window is dismissible, independently of map navigation.
+     * Keep the close hit target anchored to province.gui, not a screen pixel. */
+    const int close_id = frontend_gui_find(&gui, panel, "button_close");
+    SDL_Rect close_area = {0};
+    if (frontend_gui_rect(&gui, close_id, viewport, &close_area)) {
+        if (setup_widget_load_sprite(&menu->province_close, menu->renderer, menu->asset_root,
+                "interface/generalstuff.gfx", "GFX_main_close_button", close_area) < 0)
+            SDL_ClearError();
+        menu->province_close.area = close_area;
+    }
     for (int i = 0; valid && i < 2; ++i) {
         const int box = frontend_gui_find(&gui, panel, boxes[i]);
         const int row = frontend_gui_find(&gui, -1, templates[i]);
@@ -844,10 +861,16 @@ static void draw_campaign_holdings(SDL_Renderer *renderer, const struct menu_ass
         const enum holding_type kind = slot ? slot->type : HOLDING_EMPTY;
         SDL_Texture *art = menu->styled_holding_art[kind] ?
                            menu->styled_holding_art[kind] : assets->holding_art[kind];
+        if (!frame) continue;
         const SDL_Rect frame_rect = place_holding_texture(frame, origin, menu->holding_frame_area[template], 1);
-        const SDL_Rect art_rect = place_holding_texture(art, origin, menu->holding_art_area[template], menu->holding_art_scale[template]);
         SDL_RenderCopy(renderer, frame, NULL, &frame_rect);
-        SDL_RenderCopy(renderer, art, NULL, &art_rect);
+        /* A missing culture/religion-specific texture is not a black holding:
+         * retain the authored frame and leave its interior empty. */
+        if (art) {
+            const SDL_Rect art_rect = place_holding_texture(art, origin,
+                menu->holding_art_area[template], menu->holding_art_scale[template]);
+            SDL_RenderCopy(renderer, art, NULL, &art_rect);
+        }
         if (slot && menu->holding_owner_frame_texture &&
             menu->holding_owner_frame_valid[template]) {
             const SDL_Rect owner = place_holding_texture(menu->holding_owner_frame_texture,
@@ -1204,6 +1227,7 @@ static bool building_click(struct menu *menu, SDL_Point point)
         if (!holding_origin(menu, i, &origin))
             break;
         SDL_Texture *frame = i ? menu->assets->holding_frame : menu->assets->holding_capital;
+        if (!frame) continue;
         const SDL_Rect area = place_holding_texture(frame, origin, menu->holding_frame_area[i != 0], 1);
         if (SDL_PointInRect(&point, &area)) {
             menu->building_slot = i;
@@ -1647,8 +1671,10 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
     blit(renderer, assets->hud_resources_left, 1260 + (menu->topbar_ready ? 2 * menu->topbar_offset : 0), 0);
     blit(renderer, assets->hud_resources_right, 1422, 0);
     blit(renderer, assets->hud_outliner, 1324, 213);
-    if (!menu->character.open) {
+    if (!menu->character.open && menu->selected) {
         blit(renderer, assets->hud_province, menu->holding_panel.x, menu->holding_panel.y);
+        if (menu->province_close.texture)
+            setup_widget_draw(&menu->province_close, renderer, menu->pointer);
         if (menu->province_title_shield) {
             SDL_Rect shield = menu->province_shield_area;
             SDL_QueryTexture(menu->province_title_shield, NULL, NULL, &shield.w, &shield.h);
@@ -1666,7 +1692,7 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
     if (menu->character.open) {
         character_view_draw(&menu->character, renderer, assets, menu->character.ruler.id == menu->campaign_ruler_id,
                             &menu->campaign, menu->pointer, centered_text);
-    } else {
+    } else if (menu->selected) {
         const int center = 174;
         if (menu->selected)
             campaign_text(renderer, assets, menu->selected->name, center, 291);
@@ -1797,11 +1823,17 @@ static void select_province(struct menu *menu, const struct province *province)
         return;
     if (menu->province_overlay)
         SDL_DestroyTexture(menu->province_overlay);
+    menu->province_overlay = NULL;
     menu->building_open = false;
     menu->selected = province;
     refresh_province_title_shield(menu);
     const unsigned id = province ? province->id : 0;
     if (menu->holding_province != id) {
+        if (!province) {
+            menu->holdings = (struct county_holdings){0};
+            menu->holding_province = 0;
+            return;
+        }
         holdings_load(&menu->holdings, menu->asset_root, province, menu->start_date);
         if (menu->settlement_scene.count) refresh_holding_style(menu);
         char *history = province_history_read(province, menu->asset_root);
@@ -3316,6 +3348,13 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
                 /* Other original tabs remain visible, but cannot click through. */
                 if (nav >= 0) break;
             }
+            if (menu->screen == CAMPAIGN && menu->selected && !menu->character.open &&
+                !menu->building_open && !menu->wonder.open &&
+                menu->province_close.area.w > 0 &&
+                SDL_PointInRect(&point, &menu->province_close.area)) {
+                select_province(menu, NULL);
+                break;
+            }
             if (menu->screen == CAMPAIGN &&
                 (campaign_wonder_click(menu, (SDL_Point){x, y}) ||
                  campaign_character_click(menu, (SDL_Point){x, y}) ||
@@ -3326,9 +3365,9 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
                 SDL_Point world;
                 if (map_view_pick(&menu->campaign_map, x, y, &world)) {
                     const struct province *province = province_at(&menu->provinces, world.x, world.y);
-                    if (province && province != menu->selected) {
+                    if (province != menu->selected) {
                         select_province(menu, province);
-                        menu_sound_play(&menu->music, CUE_GENERIC);
+                        if (province) menu_sound_play(&menu->music, CUE_GENERIC);
                     }
                 }
             } else {
@@ -3429,6 +3468,8 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
                     menu->building_open = false;
                 else if (menu->screen == CAMPAIGN && menu->character.open)
                     menu->character.open = false;
+                else if (menu->screen == CAMPAIGN && menu->selected)
+                    select_province(menu, NULL);
                 else
                     activate(menu, window, menu->screen == MAIN_MENU ? QUIT : BACK);
             }

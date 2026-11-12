@@ -20,6 +20,8 @@ struct character_view {
     char extra_icon_labels[16][64];
     SDL_Rect stat_values[RULER_STAT_COUNT], trait_area, combat_skill_area;
     int trait_step, trait_bonus[RULER_STAT_COUNT];
+    int combat_skill;
+    bool combat_skill_known;
     int trait_modifiers[RULER_TRAIT_LIMIT][RULER_STAT_COUNT];
     struct setup_widget section_icons[4], prestige_icon, piety_icon;
     char section_labels[4][96], section_help[4][512];

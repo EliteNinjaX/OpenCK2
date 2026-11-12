@@ -233,6 +233,8 @@ static void load_character_traits(struct character_view *view, SDL_Renderer *ren
         view->trait_icons[i] = (struct setup_widget){0};
     }
     memset(view->trait_bonus, 0, sizeof view->trait_bonus);
+    view->combat_skill = 0;
+    view->combat_skill_known = false;
     for (size_t i = 0; i < view->ruler.trait_count; ++i) {
         const char *key = view->ruler.traits[i];
         char sprite[80];
@@ -256,6 +258,18 @@ static void load_character_traits(struct character_view *view, SDL_Renderer *ren
             if (!is(find(&body, view->ruler.traits[i]), "{"))
                 continue;
             education[i] = is(field(body, "education"), "yes");
+            {
+                char raw[24], *end;
+                const struct token rating = field(body, "combat_rating");
+                if (rating.size && rating.size < sizeof raw) {
+                    copy_token(raw, sizeof raw, rating);
+                    const long delta = strtol(raw, &end, 10);
+                    if (!*end && delta >= -1000 && delta <= 1000) {
+                        view->combat_skill += (int)delta;
+                        view->combat_skill_known = true;
+                    }
+                }
+            }
             for (size_t stat = 0; stat < RULER_STAT_COUNT; ++stat) {
                 char raw[24], *end;
                 copy_token(raw, sizeof raw, field(body, ruler_stat_keys[stat]));
@@ -645,11 +659,16 @@ void character_view_draw(const struct character_view *view, SDL_Renderer *render
     const char *hover = NULL;
     const char *help = NULL;
     char stat_hint[128], stat_detail[4096], claim_hint[120], relation_hint[128], relation_name[240];
-    /* CK2 defines combat_skill separately from the five primary attributes.
-       Display an explicit unknown value until a verified source supplies it. */
-    if (view->combat_skill_area.w > 0)
-        text(renderer, assets, "-", 1, view->combat_skill_area.x + view->combat_skill_area.w / 2,
+    /* Traits supply the authored combat_rating modifier. Base combat skill,
+       other modifiers and character-state effects are not yet reconstructed. */
+    if (view->combat_skill_area.w > 0) {
+        char combat[24] = "-";
+        if (view->combat_skill_known)
+            snprintf(combat, sizeof combat, "%+d", view->combat_skill);
+        text(renderer, assets, combat, strlen(combat),
+             view->combat_skill_area.x + view->combat_skill_area.w / 2,
              view->combat_skill_area.y);
+    }
     for (size_t i = 0; i < RULER_STAT_COUNT; ++i) {
         const SDL_Rect value = view->stat_values[i];
         const bool known = (view->ruler.known_stats & (1u << i)) != 0;
