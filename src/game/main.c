@@ -1053,7 +1053,7 @@ static bool building_click(struct menu *menu, SDL_Point point)
 
 static void advance_campaign_day(struct menu *menu)
 {
-    campaign_advance_day(&menu->campaign);
+    campaign_advance_day(&menu->campaign, &menu->holdings);
     construction_day(&menu->construction);
     if (menu->selected)
         construction_settlement_apply(&menu->construction, menu->selected->id, &menu->holdings);
@@ -1219,7 +1219,7 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
             campaign_text(renderer, assets, menu->selected->name, center, 291);
         const bool owns_selection = menu->selected && menu->selected->id == menu->home_province;
         campaign_text(renderer, assets, owns_selection ? "Your county" : "Outside your county", 99, 349);
-        snprintf(line, sizeof line, "+%u gold per month", campaign_monthly_income(&menu->campaign));
+        snprintf(line, sizeof line, "+%u gold per month", campaign_monthly_income(&menu->campaign, &menu->holdings));
         campaign_text(renderer, assets, line, 99, 379);
         snprintf(line, sizeof line, "Holdings: %zu / %zu", menu->holdings.count, menu->holdings.capacity);
         SDL_SetTextureColorMod(assets->font, 36, 26, 16);
