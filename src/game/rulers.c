@@ -143,6 +143,7 @@ static void read_character(struct ruler_profile *r, const char *block, int cutof
     copy_token(r->name, sizeof r->name, field(block, "name"));
     copy_token(r->culture_key, sizeof r->culture_key, field(block, "culture"));
     copy_token(r->religion_key, sizeof r->religion_key, field(block, "religion"));
+    copy_token(r->government_key, sizeof r->government_key, field(block, "government"));
     copy_token(r->dna, sizeof r->dna, field(block, "dna"));
     struct token properties = field(block, "prp");
     if (!properties.size)
@@ -168,7 +169,7 @@ static void read_character(struct ruler_profile *r, const char *block, int cutof
     r->known_stats = 0;
     int stat_dates[RULER_STAT_COUNT] = {0};
     read_stats(r, block, 0, stat_dates);
-    int culture = 0, religion = 0, dynasty = 0, marriage = 0;
+    int culture = 0, religion = 0, dynasty = 0, marriage = 0, government = 0;
     for (struct token key; (key = token(&block)).size && !is(key, "}");) {
         if (!is(token(&block), "="))
             break;
@@ -201,6 +202,11 @@ static void read_character(struct ruler_profile *r, const char *block, int cutof
             if (t.size && when >= religion) {
                 religion = when;
                 copy_token(r->religion_key, sizeof r->religion_key, t);
+            }
+            t = field(block, "government");
+            if (t.size && when >= government) {
+                government = when;
+                copy_token(r->government_key, sizeof r->government_key, t);
             }
             t = field(block, "dynasty");
             if (t.size && when >= dynasty) {

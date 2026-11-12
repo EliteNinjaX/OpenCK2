@@ -23,5 +23,7 @@ bool map_view_move(struct map_view *, float dx, float dy, int zoom_steps);
 bool map_view_animate(struct map_view *view, Uint64 now);
 void map_view_free(struct map_view *view);
 bool map_view_pick(const struct map_view *view, int x, int y, SDL_Point *world);
+/* Same perspective/terrain heightfield as the main campaign map. */
+bool map_view_project_ground(const struct map_view *, float world_x, float world_y, SDL_Point *screen);
 
 #endif

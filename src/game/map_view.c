@@ -904,3 +904,27 @@ bool map_view_pick(const struct map_view *view, int x, int y, SDL_Point *world)
     world->y = (int)(index / (unsigned)view->world_width);
     return true;
 }
+
+/* Projects an authored settlement point onto the same heightfield rays used
+ * by render_row(), rather than painting labels at a flat texture offset. */
+bool map_view_project_ground(const struct map_view *view, float x, float y, SDL_Point *point)
+{
+    if (!view || !point || !view->layers || !view->width || !view->height ||
+        x < 0 || y < 0 || x >= view->world_width || y >= view->world_height)
+        return false;
+    const struct camera camera = camera_for(view, true);
+    const float dh = elevation(view->layers, (int)x, (int)y) - camera.height;
+    const float dy = y - camera.y;
+    const float depth = dy * camera.forward_y + dh * camera.forward_height;
+    if (depth <= 1.0f)
+        return false;
+    const float factor = camera.focal / depth;
+    const float px = view->width * 0.5f + (x - camera.x) * factor;
+    const float py = view->height * 0.5f -
+        (dy * camera.forward_height - dh * camera.forward_y) * factor;
+    if (px < -64 || py < -64 || px >= view->width + 64 || py >= view->height + 64)
+        return false;
+    point->x = (int)lroundf(px);
+    point->y = (int)lroundf(py);
+    return true;
+}

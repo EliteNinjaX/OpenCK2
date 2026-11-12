@@ -22,7 +22,7 @@ struct ruler_profile {
     unsigned father, mother, spouse;
     bool deceased;
     unsigned id, dynasty_id, age, religion_icon;
-    char name[96], culture_key[64], religion_key[64], dynasty[96];
+    char name[96], culture_key[64], religion_key[64], dynasty[96], government_key[80];
     char culture[96], religion[96], dna[32], properties[48];
     bool dynasty_titles, female, age_known;
 };

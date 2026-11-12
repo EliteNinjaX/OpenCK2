@@ -18,6 +18,7 @@
 #include "map_interaction.h"
 #include "map_modes.h"
 #include "campaign_hud.h"
+#include "map_settlements.h"
 
 #include <SDL_image.h>
 #include <errno.h>
@@ -175,6 +176,7 @@ struct menu {
     unsigned holding_province;
     struct map_gesture map_gesture;
     struct map_mode_state map_modes;
+    struct map_settlement_scene settlement_scene;
     struct campaign_hud_ui hud_ui;
     bool realms_visible, campaign_active;
     SDL_Point pointer;
@@ -1219,6 +1221,201 @@ static void draw_topbar_tooltip(SDL_Renderer *renderer, const struct menu_assets
     }
 }
 
+/* Culture-aware 2D settlement indicators. Original model names/paths are
+ * discovered from settlements.gfx, but actual 3D meshes are deferred. */
+static const char *map_holding_type(enum holding_type type)
+{
+    static const char *const names[] = {"Empty", "Castle", "City", "Temple", "Tribal", "Nomad"};
+    return type > HOLDING_EMPTY && type < HOLDING_TYPE_COUNT ? names[type] : "Holding";
+}
+
+static unsigned holding_government_bit(enum holding_type type)
+{
+    static const unsigned bits[] = {0, GOVERNMENT_CASTLE, GOVERNMENT_CITY,
+        GOVERNMENT_TEMPLE, GOVERNMENT_TRIBAL, GOVERNMENT_NOMAD};
+    return type < HOLDING_TYPE_COUNT ? bits[type] : 0;
+}
+
+static bool marker_area(const struct menu *menu, const struct map_settlement_marker *m,
+                        SDL_Rect *area)
+{
+    SDL_Point screen;
+    if (!m || !map_view_project_ground(&menu->campaign_map, m->x, m->y, &screen)) return false;
+    *area = (SDL_Rect){screen.x - 13, screen.y - 13, 26, 26};
+    return true;
+}
+
+static const struct map_settlement_marker *hovered_map_holding(const struct menu *menu)
+{
+    if (menu->campaign_map.zoom < 1.55f ||
+        !campaign_map_interactive(menu, menu->pointer)) return NULL;
+    const struct map_settlement_marker *nearest = NULL;
+    int distance = 14 * 14;
+    for (size_t i = 0; i < menu->settlement_scene.count; ++i) {
+        SDL_Rect rect;
+        if (!marker_area(menu, menu->settlement_scene.markers + i, &rect)) continue;
+        const int dx = menu->pointer.x - (rect.x + rect.w / 2);
+        const int dy = menu->pointer.y - (rect.y + rect.h / 2);
+        if (dx * dx + dy * dy < distance) {
+            distance = dx * dx + dy * dy;
+            nearest = menu->settlement_scene.markers + i;
+        }
+    }
+    return nearest;
+}
+
+static void draw_map_settlements(SDL_Renderer *renderer, const struct menu_assets *assets,
+                                 const struct menu *menu)
+{
+    const float zoom = menu->campaign_map.zoom;
+    if (zoom < 1.55f) return;
+    SDL_Rect occupied[160];
+    size_t occupied_count = 0;
+    for (size_t i = 0; i < menu->settlement_scene.count; ++i) {
+        const struct map_settlement_marker *m = menu->settlement_scene.markers + i;
+        SDL_Rect area;
+        if (!marker_area(menu, m, &area)) continue;
+        if (area.x < 0 || area.y < 60 || area.x + area.w >= WIDTH || area.y + area.h >= HEIGHT - 60)
+            continue;
+        /* Deconflict neighboring provinces. A clicked/hovered marker still
+         * uses the same projected geometry as the visible marker. */
+        SDL_Rect label_area = {area.x - 44, area.y - 8, 115, 54};
+        bool overlap = false;
+        for (size_t j = 0; j < occupied_count; ++j)
+            if (SDL_HasIntersection(&label_area, occupied + j)) { overlap = true; break; }
+        if (overlap) continue;
+        if (occupied_count < SDL_arraysize(occupied)) occupied[occupied_count++] = label_area;
+        SDL_Texture *art = m->type < HOLDING_TYPE_COUNT ? assets->holding_art[m->type] : NULL;
+        if (art) {
+            /* Temporary 2D visual distinction: culture colors modify the
+             * shared holding sprite. True CK2 culture-specific meshes need
+             * a separate actor/mesh renderer; see the progress report. */
+            if (m->culture_color_known)
+                SDL_SetTextureColorMod(art,
+                    (Uint8)(174 + ((m->rgb >> 16) & 0xffu) / 3u),
+                    (Uint8)(174 + ((m->rgb >> 8) & 0xffu) / 3u),
+                    (Uint8)(174 + (m->rgb & 0xffu) / 3u));
+            SDL_RenderCopy(renderer, art, NULL, &area);
+            if (m->culture_color_known) SDL_SetTextureColorMod(art, 255, 255, 255);
+        }
+        if (m->culture_color_known) {
+            SDL_SetRenderDrawColor(renderer, (Uint8)(m->rgb >> 16), (Uint8)(m->rgb >> 8),
+                                   (Uint8)m->rgb, 255);
+            SDL_RenderDrawRect(renderer, &area);
+        }
+        if (zoom > 2.05f) {
+            /* The original map has model-specific labels. This is a readable
+             * interim 2D label using verified localization. */
+            char short_name[25];
+            SDL_strlcpy(short_name, *m->name ? m->name : m->holding_id, sizeof short_name);
+            SDL_SetTextureColorMod(assets->font, 26, 22, 19);
+            campaign_text(renderer, assets, short_name, area.x + area.w / 2, area.y + 29);
+            if (zoom > 2.65f && m->owner[0]) {
+                char owner[25];
+                SDL_strlcpy(owner, m->owner, sizeof owner);
+                campaign_text(renderer, assets, owner, area.x + area.w / 2, area.y + 49);
+            }
+            SDL_SetTextureColorMod(assets->font, 255, 255, 255);
+        }
+    }
+}
+
+static void holding_tooltip(SDL_Renderer *renderer, const struct menu_assets *assets,
+                            const struct menu *menu, const struct map_settlement_marker *m)
+{
+    char heading[160], info[620];
+    SDL_snprintf(heading, sizeof heading, "%s: %s", map_holding_type(m->type),
+                 m->name[0] ? m->name : m->holding_id);
+    const struct ruler_profile *ruler = m->holder_id ? realm_ruler(&menu->realms, m->holder_id) : NULL;
+    const bool authored = ruler && ruler->government_key[0];
+    const struct government_definition *candidate = NULL;
+    const size_t count = authored ? 0 : government_holding_candidates(&menu->settlement_scene.governments,
+        holding_government_bit(m->type), &candidate, 1);
+    const char *government = authored ? ruler->government_key :
+        count == 1 && candidate ? candidate->id : "Not assigned (potential rules pending)";
+    SDL_snprintf(info, sizeof info, "Owner: %s%s\nHolding ID: %s\nCulture: %s\nGraphic: %s\n"
+        "Government: %s%s",
+        m->owner[0] ? m->owner : "Not recorded",
+        m->county_holder_fallback ? " (county holder fallback)" : "",
+        m->holding_id, m->culture[0] ? m->culture : "Not recorded",
+        m->actor_known ? m->actor : "No matching defined model",
+        government, authored ? " (authored character history)" :
+                    count == 1 ? " (candidate only)" : "");
+    panel_tooltip(renderer, assets, menu->pointer, heading, info, centered_text);
+}
+
+/* Individual baronies in the province window have distinct title holders.
+ * Never silently substitute the emperor for a missing barony owner. */
+static const struct holding *hovered_panel_holding(const struct menu *menu)
+{
+    if (menu->character.open || !menu->selected || !menu->holding_layout_ready)
+        return NULL;
+    for (size_t i = 0; i < menu->holdings.count; ++i) {
+        SDL_Rect origin;
+        if (!holding_origin(menu, i, &origin)) continue;
+        SDL_Texture *frame = i ? menu->assets->holding_frame : menu->assets->holding_capital;
+        if (!frame) continue;
+        const SDL_Rect bounds = place_holding_texture(frame, origin,
+            menu->holding_frame_area[i != 0], 1);
+        if (SDL_PointInRect(&menu->pointer, &bounds)) return menu->holdings.slots + i;
+    }
+    return NULL;
+}
+
+static void panel_holding_tooltip(SDL_Renderer *renderer, const struct menu_assets *assets,
+                                  const struct menu *menu, const struct holding *holding)
+{
+    const struct realm_title_info title = {0};
+    struct realm_title_info barony = title;
+    const bool recorded = realm_title_info(&menu->realms, holding->id, &barony) && barony.holder;
+    const struct ruler_profile *owner = recorded ? realm_ruler(&menu->realms, barony.holder) : NULL;
+    char heading[176], details[340];
+    SDL_snprintf(heading, sizeof heading, "%s: %s", map_holding_type(holding->type),
+                 holding->name[0] ? holding->name : holding->id);
+    SDL_snprintf(details, sizeof details,
+                 "Barony: %s\nOwner: %s\nTitle holder: %s\nProvince: %s",
+                 holding->id, owner && owner->name[0] ? owner->name : "Not recorded",
+                 recorded ? "Recorded in title history" : "No explicit barony holder",
+                 menu->selected ? menu->selected->name : "Unknown");
+    panel_tooltip(renderer, assets, menu->pointer, heading, details, centered_text);
+}
+
+static bool character_government_tooltip(SDL_Renderer *renderer, const struct menu_assets *assets,
+                                          const struct menu *menu)
+{
+    if (!menu->character.open || !menu->character.extra_icons[6].texture ||
+        !SDL_PointInRect(&menu->pointer, &menu->character.extra_icons[6].area)) return false;
+    struct realm_title_info title;
+    const bool found = realm_primary_title(&menu->realms, menu->character.ruler.id, &title);
+    const struct map_settlement_marker *marker = found ?
+        map_settlement_by_id(&menu->settlement_scene, title.capital) : NULL;
+    const struct government_definition *candidate = NULL;
+    const size_t n = marker ? government_holding_candidates(&menu->settlement_scene.governments,
+        holding_government_bit(marker->type), &candidate, 1) : 0;
+    char details[500];
+    const char *authored = menu->character.ruler.government_key;
+    const struct government_definition *definition = authored[0] ?
+        government_find(&menu->settlement_scene.governments, authored) : NULL;
+    if (authored[0]) {
+        SDL_snprintf(details, sizeof details,
+            "Authored government: %s\nGroup: %s\n"
+            "Source: character history (not dynamically recalculated)",
+            authored, definition ? definition->group : "Not in loaded government definitions");
+    } else if (candidate && n == 1) {
+        SDL_snprintf(details, sizeof details,
+            "Possible type: %s\nGroup: %s\nColor: #%06x\n"
+            "Assignment status: unverified; potential rules not evaluated",
+            candidate->id, candidate->group, candidate->color_rgb);
+    } else {
+        SDL_snprintf(details, sizeof details,
+            "Loaded definitions: %zu\nGovernment selection is not yet calculated.\n"
+            "CK2 evaluates potential scripts, ruler status, religion, titles, and holding types.",
+            menu->settlement_scene.governments.count);
+    }
+    panel_tooltip(renderer, assets, menu->pointer, "Government", details, centered_text);
+    return true;
+}
+
 static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *assets,
                           const struct menu *menu)
 {
@@ -1280,7 +1477,9 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
     draw_wonder(renderer, assets, menu);
     draw_topbar_tooltip(renderer, assets, menu);
     const int hovered_mode = campaign_hud_ui_mode_hit(&menu->hud_ui, menu->pointer);
-    if (hovered_mode >= 0) {
+    if (character_government_tooltip(renderer, assets, menu)) {
+        /* Original government sprite is already drawn by character_view. */
+    } else if (hovered_mode >= 0) {
         const struct map_mode_definition *mode = map_mode_definition(hovered_mode);
         panel_tooltip(renderer, assets, menu->pointer, mode->label,
                       mode->implemented ? "Select this map mode" : "Map coloring not implemented yet",
@@ -1291,6 +1490,14 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
             panel_tooltip(renderer, assets, menu->pointer, campaign_hud_nav_label(nav),
                           "Navigation screen not implemented yet", centered_text);
         } else if (!menu->map_gesture.active && !menu->wonder.open) {
+            const struct holding *panel_holding = hovered_panel_holding(menu);
+            if (panel_holding) {
+                panel_holding_tooltip(renderer, assets, menu, panel_holding);
+            } else {
+            const struct map_settlement_marker *marker = hovered_map_holding(menu);
+            if (marker) {
+                holding_tooltip(renderer, assets, menu, marker);
+            } else {
             const struct province *province = campaign_pointer_province(menu, menu->pointer);
             if (province) {
                 const size_t index = (size_t)(province - menu->provinces.provinces);
@@ -1311,6 +1518,8 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
                          owned && county.holder ? "\nRight-click: view county holder" : "",
                          realm && independent.holder ? "\nShift + right-click: view top liege" : "");
                 panel_tooltip(renderer, assets, menu->pointer, heading, details, centered_text);
+            }
+            }
             }
         }
     }
@@ -1794,6 +2003,10 @@ static void open_campaign(struct menu *menu, SDL_Window *window, bool new_game)
     }
     if (!load_realms(menu, window, menu->start_date))
         menu->realms_visible = false;
+    if ((new_game || !menu->settlement_scene.markers) && menu->realms.history &&
+        map_settlements_build(&menu->settlement_scene, menu->asset_root,
+                              &menu->provinces, &menu->realms, menu->start_date) < 0)
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Map settlements unavailable: %s", SDL_GetError());
     load_campaign_topbar(menu);
     campaign_hud_ui_load(&menu->hud_ui, menu->renderer, menu->asset_root,
                          (SDL_Point){WIDTH, HEIGHT});
@@ -2101,6 +2314,8 @@ static void draw(SDL_Renderer *renderer,
     SDL_RenderCopy(renderer, map, NULL, NULL);
     if (world && menu->realms_visible)
         realm_map_draw(&menu->realms, renderer);
+    if (menu->screen == CAMPAIGN)
+        draw_map_settlements(renderer, assets, menu);
     if (!world && menu->screen != STARTING_ERA) {
         blit(renderer, assets->title, 15, 5);
         blit(renderer, assets->logo, WIDTH - 155, 8);
@@ -2843,6 +3058,7 @@ cleanup:
         SDL_DestroyTexture(menu.campaign_portrait);
     portraits_close(&menu.portrait_source);
     rules_free(&menu.rules);
+    map_settlements_free(&menu.settlement_scene);
     realm_map_free(&menu.realms);
     era_menu_free(&menu.era);
     setup_toolbar_free(&menu.toolbar);
