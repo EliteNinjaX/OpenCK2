@@ -3348,6 +3348,7 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
                 /* Other original tabs remain visible, but cannot click through. */
                 if (nav >= 0) break;
             }
+            SDL_Point point = {event->button.x, event->button.y};
             if (menu->screen == CAMPAIGN && menu->selected && !menu->character.open &&
                 !menu->building_open && !menu->wonder.open &&
                 menu->province_close.area.w > 0 &&
