@@ -15,7 +15,19 @@ void campaign_start(struct campaign *campaign)
 
 unsigned campaign_monthly_income(const struct campaign *campaign)
 {
-    return 5 + 2 * campaign->improvements;
+    /* Sum income from active county holdings */
+    const struct county_holdings *holdings = &campaign->holdings;
+    unsigned total = 0;
+    for (size_t i = 0; i < holdings->count; ++i) {
+        const struct holding *h = &holdings->slots[i];
+        if (h->type && h->income == 0)
+            h->income = 5 + (int)(h->type - 1) * 3; /* Castle=8, City=11, Temple=6 */
+        total += h->income;
+    }
+    /* Base income fallback for pre-existing setups without holdings */
+    if (total == 0 || campaign->holdings.count == 0)
+        return 5 + 2 * campaign->improvements;
+    return total;
 }
 
 static int days_in_month(struct campaign_date date)
@@ -40,6 +52,7 @@ void campaign_advance_day(struct campaign *campaign)
     } else {
         ++date->month;
     }
+    /* Income collection */
     const unsigned income = campaign_monthly_income(campaign);
     if (campaign->treasury <= UINT_MAX - income)
         campaign->treasury += income;
@@ -255,7 +268,7 @@ SDL_Texture *province_highlight(const struct province_map *map, SDL_Renderer *re
                                const struct province *province, const struct map_view *view)
 {
     SDL_Surface *mask = SDL_CreateRGBSurfaceWithFormat(0, view->width, view->height, 32,
-                                                      SDL_PIXELFORMAT_ARGB8888);
+                                                       SDL_PIXELFORMAT_ARGB8888);
     if (!mask)
         return NULL;
     for (int y = 0; y < mask->h; ++y) {
