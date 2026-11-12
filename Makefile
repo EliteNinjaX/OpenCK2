@@ -33,32 +33,31 @@ $(CONTENT_TEST): $(CONTENT_SOURCES) src/launcher/content.h src/launcher/lifecycl
 	mkdir -p "$(@D)"
 	$(CC) $(CPPFLAGS) $(CFLAGS) -UNDEBUG -std=c17 -Wall -Wextra -Wpedantic -Isrc/launcher $(LDFLAGS) -o "$@" $(CONTENT_SOURCES) $(LDLIBS)
 
-GAME := $(BUILD_DIR)/ck2-game
+GAME := $(BUILD_DIR)/OpenCK2
 CONTENT_CATALOG := src/open_launcher/asset_paths.c src/open_launcher/zip_assets.c src/open_launcher/install.c src/open_launcher/catalog.c
 CONTENT_HEADERS := src/open_launcher/zip_assets.h src/open_launcher/asset_paths.h src/open_launcher/install.h src/open_launcher/catalog.h
-GAME_SOURCES := src/game/main.c src/game/assets.c src/game/music.c src/game/settings.c src/game/era.c src/game/portraits.c src/game/ck2_script.c src/game/rules.c src/game/realms.c src/game/holdings.c src/game/construction.c src/game/rulers.c src/game/campaign.c src/game/map_view.c src/game/models.c src/game/setup_toolbar.c src/game/frontend_gui.c $(CONTENT_CATALOG)
+GAME_SOURCES := src/game/main.c src/game/character_view.c src/game/assets.c src/game/music.c src/game/settings.c src/game/era.c src/game/portraits.c src/game/ck2_script.c src/game/rules.c src/game/realms.c src/game/holdings.c src/game/construction.c src/game/rulers.c src/game/campaign.c src/game/map_view.c src/game/models.c src/game/setup_toolbar.c src/game/frontend_gui.c $(CONTENT_CATALOG)
 
 .PHONY: game
 all: game
 game: open-launcher
 
-$(GAME): $(GAME_SOURCES) src/game/assets.h src/game/music.h src/game/settings.h src/game/era.h src/game/portraits.h src/game/ck2_script.h src/game/rules.h src/game/realms.h src/game/holdings.h src/game/construction.h src/game/rulers.h src/game/campaign.h src/game/map_view.h src/game/models.h src/game/setup_toolbar.h src/game/frontend_gui.h src/version.h $(CONTENT_HEADERS) Makefile
+$(GAME): $(GAME_SOURCES) src/game/character_view.h src/game/assets.h src/game/music.h src/game/settings.h src/game/era.h src/game/portraits.h src/game/ck2_script.h src/game/rules.h src/game/realms.h src/game/holdings.h src/game/construction.h src/game/rulers.h src/game/campaign.h src/game/map_view.h src/game/models.h src/game/setup_toolbar.h src/game/frontend_gui.h src/version.h $(CONTENT_HEADERS) Makefile
 	mkdir -p "$(@D)"
 	$(CC) $(CPPFLAGS) $(CFLAGS) -std=c17 -Wall -Wextra -Wpedantic \
 		$$(pkg-config --cflags sdl2 SDL2_image SDL2_mixer zlib) $(LDFLAGS) -o "$@" $(GAME_SOURCES) \
 		$$(pkg-config --libs sdl2 SDL2_image SDL2_mixer zlib) -lm $(LDLIBS)
 
-OPEN_LAUNCHER := $(BUILD_DIR)/OpenCK2Launcher
+OPEN_LAUNCHER := $(BUILD_DIR)/Launcher
 OPEN_LAUNCHER_SOURCES := src/open_launcher/main.c $(CONTENT_CATALOG) src/game/assets.c
 
 .PHONY: open-launcher
 all: open-launcher
 open-launcher: $(OPEN_LAUNCHER) $(GAME)
 
-ifneq ($(wildcard assets/openck2-background.png),)
-open-launcher: $(BUILD_DIR)/openck2-background.png
-
-$(BUILD_DIR)/openck2-background.png: assets/openck2-background.png
+ifneq ($(wildcard assets/OpenCK2-openck2-background.png),)
+open-launcher: $(BUILD_DIR)/OpenCK2-openck2-background.png
+$(BUILD_DIR)/OpenCK2-openck2-background.png: assets/OpenCK2-openck2-background.png
 	mkdir -p "$(@D)"
 	cp "$<" "$@"
 endif

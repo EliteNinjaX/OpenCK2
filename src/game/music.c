@@ -80,6 +80,24 @@ void menu_sound_play(struct menu_music *music, enum menu_cue cue)
         Mix_PlayChannel(-1, music->cues[cue], 0);
 }
 
+void menu_sound_stop_country(const struct menu_music *music)
+{
+    if (!music->device_open)
+        return;
+    const int channels = Mix_AllocateChannels(-1);
+    for (int channel = 0; channel < channels; ++channel) {
+        if (!Mix_Playing(channel))
+            continue;
+        Mix_Chunk *current = Mix_GetChunk(channel);
+        for (int cue = CUE_COUNTRY; current && cue < CUE_COUNT; ++cue) {
+            if (current == music->cues[cue]) {
+                Mix_HaltChannel(channel);
+                break;
+            }
+        }
+    }
+}
+
 void menu_sound_finish(struct menu_music *music)
 {
     if (!music->device_open)

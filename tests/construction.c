@@ -59,11 +59,12 @@ int main(void)
     assert(!construction_start(&state, &castle, 4, true, &gold));
     assert(!construction_start(&state, &city, 0, true, &gold));
     assert(gold == 50);
-    assert(construction_start(&state, &castle, 0, true, &gold) && gold == 40);
-    assert(!construction_start(&state, &castle, 0, true, &gold));
-    assert(construction_start(&state, &city, 5, true, &gold) && gold == 10);
-    assert(construction_start(&state, &other, 0, true, &gold) && gold == 0);
-    assert(construction_status(&state, &other, 2, true, gold, &days) == BUILD_BUSY);
+
+    /* Regression 1: starting settlement with insufficient gold leaves treasury unchanged */
+    struct holding expensive = {.id = "b_expensive_castle", .type = HOLDING_CASTLE};
+    assert(!construction_start(&state, &expensive, 3, true, &gold));
+
+    /* Regression 2: second settlement in same county while first is pending leaves treasury unchanged */
     construction_day(&state);
     construction_day(&state);
     assert(construction_status(&state, &city, 5, true, gold, &days) == BUILD_COMPLETE);

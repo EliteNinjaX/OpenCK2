@@ -47,3 +47,29 @@ launcher, campaign and holdings regressions passed with `-Werror`.
 
 - Finish the vanilla building list statistics, level indicators, scroll controls, and tooltips.
 - Compare the Create Holding dialog and refine title selection, price modifiers, duration, and eligibility against vanilla. See [construction evidence](reverse-engineering/CONSTRUCTION.md).
+
+## Campaign character panel
+
+- Click the player portrait in the campaign to open the character panel. The frame, tabs, labels, family rows, close control, and vassal list use `interface/domestic_dynastic.gui` and its sprite references. Artwork is resolved through `interface/domestic_dynastic.gfx` and the shared interface sprite files. Labels use the installed localization.
+- The panel shows historical identity, the primary title's shield and crown, religion, and the campaign treasury. Family uses parent IDs and dated marriage, birth, and death entries in `history/characters`. Vassals use the existing historical title roster and support wheel scrolling.
+- Finish Relations, Court, Pacts, and Abroad when their runtime data exists. The tabs show the red deferred tooltip. Dynasty arms still need the coat-of-arms renderer. The heir, wards, generated court, traits, live stats, diplomatic actions, character navigation, and vanilla vassal ordering and scrollbar need separate passes.
+- Family is a start-date snapshot. The spouse display supports one dated spouse and family rows are bounded. Exact portrait appearance, kin ordering, and runtime relationship changes need further work.
+- The character panel reads the five authored base attributes from character history and applies dated assignments up to the campaign start. Attribute icons and positions come from `domestic_dynastic.gui`. A dash marks an omitted value. Recover generated attributes, trait effects, spouse and council contributions, and state totals in a separate stats pass.
+- The `choose_country_*` harp cues are used in ruler selection. Entering a campaign stops any still-playing harp, and campaign province selection and the Capital button use the generic click.
+
+## Campaign top bar, titles, traits, and Great Works
+
+- The top bar binds CK2's resource icons, extension, date strip, speed indicator, and plus/minus buttons from `interface/main.gui` and `interface/main.gfx`. The treasury and date use campaign state. The five speed settings use OpenCK2's clock intervals. Resource totals without simulation data show a dash.
+- The character panel uses localized rank titles and flags for historically held titles. Culture-, government-, and religion-specific ruler titles and claim shields need additional work.
+- The trait row reads authored traits and dated changes from `history/characters`, sprites from `interface/traits.gfx`, and direct skill modifiers from `common/traits`. The stat tooltip separates the authored base from trait modifiers. Generated traits, runtime effects, and state totals remain open.
+- The province's Great Works button opens the original `interface/wonder.gui` panel for historically authored wonders. The reader uses dated province history, the picture reference in `common/wonders`, original sprites, and localization. Construction, upgrade eligibility, repair, and gameplay effects remain open.
+- Dynasty arms require decoding `coat_of_arms/data` from `common/dynasties`, then composing the correct palette, atlas frame, emblem, and shield mask from `interface/coat_of_arms/coats_of_arms.txt` and associated assets. Verify an authored dynasty against vanilla before covering generated arms and DLC atlas ordering.
+- Bloodlines use `interface/bloodlines.gui`, `interface/bloodlines.gfx`, `common/bloodlines`, and dated `create_bloodline` blocks in character history. Build a membership snapshot with verified DLC and inheritance rules before populating the character's bloodline list. A founder record alone does not establish which descendants inherit it.
+
+## Character inspection and historical claims
+
+- Spouse, family, and vassal entries can open the selected character. The player portrait returns to the player. A spouse of a king or emperor can display a consort title when they hold no title of their own. Opinion, court location, and culture-specific titles still need runtime data.
+- Claims read top-level and dated historical assignments, including direct weak-claim effects. Only authored claims are shown. Inherited claims, war eligibility, and claim interactions remain open.
+- Education icons sort first using `education = yes` from `common/traits`. The authored coronation traits can render through the normal trait path when present. Their runtime acquisition depends on `events/HF_coronation_events.txt` and related scripts.
+- Section icons and tooltips use the character GUI's localization keys. The top bar reads authored prestige and piety where present and leaves generated totals blank. Wealth and the other resource tooltips use original localization.
+- The [144-hour local AI queue](QWEN-144-HOUR-PLAN.md) covers these remaining systems in checkpointed parts.

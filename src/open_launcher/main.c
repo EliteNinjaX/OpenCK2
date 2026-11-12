@@ -708,7 +708,7 @@ static bool run_launcher(SDL_Window *window, SDL_Renderer *renderer, struct them
                     "Choose a valid Crusader Kings II installation in Settings.", window);
             } else if (!game || access(game, X_OK) != 0) {
                 SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "OpenCK2 executable not found",
-                    "Build ck2-game and place it beside the launcher.", window);
+                    "Build OpenCK2 and place it beside the launcher.", window);
             } else {
                 play = true;
                 break;
@@ -742,7 +742,7 @@ int main(int argc, char **argv)
     char *settings = prefs ? ck2_join_path(prefs, "install-path.txt") : NULL;
     char *selection = prefs ? ck2_join_path(prefs, "content-selection.txt") : NULL;
     char *base = SDL_GetBasePath();
-    char *game = base ? ck2_join_path(base, "ck2-game") : NULL;
+    char *game = base ? ck2_join_path(base, "OpenCK2") : NULL;
     SDL_free(base);
     SDL_free(prefs);
 

@@ -12,6 +12,7 @@
 #include "rules.h"
 #include "realms.h"
 #include "holdings.h"
+#include "character_view.h"
 #include "construction.h"
 #include "map_view.h"
 
@@ -30,7 +31,7 @@ enum screen { MAIN_MENU, SINGLE_PLAYER, STARTING_ERA, MAP_SETUP, GAME_RULES, OPT
 enum action { UNAVAILABLE, OPEN_OPTIONS, OPEN_CREDITS, QUIT, MULTIPLAYER,
               BACK, CONTENT_SETTINGS, PARADOX_LINK, PDF_LINK, REDDIT_LINK, GITHUB_LINK,
               OPEN_SINGLE_PLAYER, NEW_GAME, CONTINUE_GAME, LOAD_GAME, TUTORIAL,
-              START_ERA, CUSTOM_SETUP, LAUNCH_CAMPAIGN, TOGGLE_REALMS, TOGGLE_TIME, NEXT_MONTH, SELECT_HOME };
+              START_ERA, CUSTOM_SETUP, LAUNCH_CAMPAIGN, TOGGLE_REALMS, TOGGLE_TIME, NEXT_MONTH, SELECT_HOME, SPEED_UP, SPEED_DOWN };
 
 extern char **environ;
 
@@ -83,7 +84,6 @@ static const struct button credits_buttons[] = {
 };
 
 static const struct button campaign_buttons[] = {
-    {{1331, 40, 216, 24}, NULL, TOGGLE_TIME},
     {{1350, 247, 224, 30}, "Capital", SELECT_HOME},
     {{356, 816, 232, 40}, "Next Month", NEXT_MONTH},
     {{1352, 816, 180, 30}, "Realms / Terrain", TOGGLE_REALMS},
@@ -91,7 +91,7 @@ static const struct button campaign_buttons[] = {
 };
 
 static const SDL_Rect campaign_hud[] = {
-    {0, 0, 492, 136}, {1260, 0, 340, 72}, {1324, 213, 276, 67},
+    {0, 0, 492, 136}, {1174, 0, 426, 72}, {1324, 213, 276, 67},
     {0, 276, 348, 624}, {1320, 696, 280, 204},
 };
 static const SDL_Rect hud_navigation = {146, 15, 320, 36};
@@ -109,6 +109,16 @@ static bool campaign_map_area(SDL_Point point)
 
 struct vassal_art {
     SDL_Texture *portrait, *shield;
+};
+
+struct wonder_panel {
+    struct setup_widget button, background, close, terrain, frame, image, completed;
+    SDL_Rect name_area, description_area, image_area, completed_area;
+    char id[64], name[96], description[1024];
+    char completed_label[64], upgrades[12][72], upgrade_names[12][96];
+    size_t upgrade_count;
+    unsigned stage;
+    bool damaged, open;
 };
 
 struct menu {
@@ -130,6 +140,14 @@ struct menu {
     unsigned home_province, setup_province, campaign_ruler_id;
     char setup_title[72];
     const struct menu_assets *assets;
+    struct character_view character;
+    struct wonder_panel wonder;
+    struct setup_widget topbar[14];
+    SDL_Rect topbar_values[8];
+    char topbar_labels[7][64], topbar_help[7][512];
+    int campaign_speed;
+    bool topbar_ready;
+    int topbar_offset;
     struct county_holdings holdings;
     struct construction construction;
     SDL_Texture *building_bg, *building_row, *building_close, *settlement_bg;
@@ -352,7 +370,7 @@ static void open_content_settings(struct menu *menu, SDL_Window *window)
         return;
 
     char *base = SDL_GetBasePath();
-    char *path = base ? ck2_join_path(base, "OpenCK2Launcher") : NULL;
+    char *path = base ? ck2_join_path(base, "OpenCK2") : NULL;
     SDL_free(base);
     char *const args[] = {path, "--content-settings", "--assets", (char *)menu->asset_root, NULL};
     pid_t child;
@@ -416,6 +434,176 @@ static void draw_single_player(SDL_Renderer *renderer, const struct menu_assets 
     }
 }
 
+static void setup_description(SDL_Renderer *, const struct menu_assets *, const char *, SDL_Rect);
+
+static void clear_wonder(struct wonder_panel *wonder)
+{
+    SDL_DestroyTexture(wonder->image.texture);
+    wonder->image = (struct setup_widget){0};
+    wonder->id[0] = 0;
+    wonder->stage = 0;
+    wonder->upgrade_count = 0;
+    wonder->damaged = wonder->open = false;
+}
+
+static void read_wonder(struct wonder_panel *wonder, const char *p, struct campaign_date date)
+{
+    clear_wonder(wonder);
+    const int cutoff = date.year * 10000 + date.month * 100 + date.day;
+    int built = 0, stage = 0, damaged = 0;
+    while (p && *p) {
+        struct token key = token(&p);
+        if (!key.size || !is(token(&p), "="))
+            break;
+        struct token value = token(&p);
+        if (!is(value, "{"))
+            continue;
+        char raw[24];
+        int y, m, d;
+        copy_token(raw, sizeof raw, key);
+        if (sscanf(raw, "%4d.%2d.%2d", &y, &m, &d) == 3) {
+            const int when = y * 10000 + m * 100 + d;
+            if (when <= cutoff) {
+                const struct token id = field(p, "build_wonder");
+                const struct token level = field(p, "set_wonder_stage");
+                const struct token damage = field(p, "set_wonder_damaged");
+                if (id.size && when >= built) {
+                    built = when;
+                    copy_token(wonder->id, sizeof wonder->id, id);
+                }
+                if (level.size && when >= stage) {
+                    stage = when;
+                    wonder->stage = SDL_min(4u, number(level));
+                }
+                const char *fields = p;
+                while (wonder->upgrade_count < SDL_arraysize(wonder->upgrades)) {
+                    const struct token upgrade = find(&fields, "build_wonder_upgrade");
+                    if (!upgrade.size || is(upgrade, "{"))
+                        break;
+                    copy_token(wonder->upgrades[wonder->upgrade_count], sizeof wonder->upgrades[0], upgrade);
+                    ++wonder->upgrade_count;
+                }
+                if (damage.size && when >= damaged) {
+                    damaged = when;
+                    wonder->damaged = is(damage, "yes");
+                }
+            }
+        }
+        skip_block(&p);
+    }
+}
+
+static bool bind_wonder_widget(struct menu *menu, const struct frontend_gui *gui, int parent,
+                               const char *name, struct setup_widget *widget)
+{
+    const int node = frontend_gui_find(gui, parent, name);
+    SDL_Rect area;
+    return frontend_gui_rect(gui, node, (SDL_Point){WIDTH, HEIGHT}, &area) &&
+        setup_widget_load_node(widget, menu->renderer, menu->asset_root, gui, node, area) == 0;
+}
+
+static bool load_wonder_view(struct menu *menu)
+{
+    struct wonder_panel *wonder = &menu->wonder;
+    if (!wonder->background.texture) {
+        struct frontend_gui gui = {0};
+        if (frontend_gui_load_file(&gui, menu->asset_root, "interface/wonder.gui") < 0)
+            return false;
+        const int panel = frontend_gui_find(&gui, -1, "wonder_view");
+        const SDL_Point viewport = {WIDTH, HEIGHT};
+        const bool ok = panel >= 0 &&
+            bind_wonder_widget(menu, &gui, panel, "background", &wonder->background) &&
+            bind_wonder_widget(menu, &gui, panel, "button_close", &wonder->close) &&
+            bind_wonder_widget(menu, &gui, panel, "wonder_image_bg", &wonder->terrain) &&
+            bind_wonder_widget(menu, &gui, panel, "wonder_image_frame", &wonder->frame) &&
+            bind_wonder_widget(menu, &gui, panel, "owned_upgrades_button", &wonder->completed) &&
+            frontend_gui_rect(&gui, frontend_gui_find(&gui, panel, "owned_upgrades_button_label"), viewport,
+                              &wonder->completed_area) &&
+            frontend_gui_rect(&gui, frontend_gui_find(&gui, panel, "wonder_name"), viewport, &wonder->name_area) &&
+            frontend_gui_rect(&gui, frontend_gui_find(&gui, panel, "wonder_description"), viewport, &wonder->description_area) &&
+            frontend_gui_rect(&gui, frontend_gui_find(&gui, panel, "wonder_image"), viewport, &wonder->image_area);
+        frontend_gui_free(&gui);
+        if (!ok) {
+            struct setup_widget *parts[] = {&wonder->background, &wonder->close, &wonder->terrain, &wonder->frame, &wonder->completed};
+            for (size_t i = 0; i < SDL_arraysize(parts); ++i) {
+                SDL_DestroyTexture(parts[i]->texture);
+                *parts[i] = (struct setup_widget){0};
+            }
+            return false;
+        }
+    }
+    if (wonder->image.texture)
+        return true;
+    struct ck2_asset_files files = ck2_list_assets(menu->asset_root, "common/wonders");
+    char picture[96] = "";
+    for (size_t i = 0; i < files.count; ++i) {
+        const char *name = files.names[i];
+        const size_t length = strlen(name);
+        if (length < 4 || strcmp(name + length - 4, ".txt"))
+            continue;
+        char *data = load_from_directory(menu->asset_root, "common/wonders", name);
+        const char *body = data;
+        if (body && is(find(&body, wonder->id), "{"))
+            copy_token(picture, sizeof picture, field(body, "picture"));
+        SDL_free(data);
+    }
+    ck2_free_asset_files(&files);
+    if (!*picture)
+        return false;
+    char sprite[112], description_key[80];
+    snprintf(sprite, sizeof sprite, "%s_large", picture);
+    if (setup_widget_load_sprite(&wonder->image, menu->renderer, menu->asset_root, "interface/wonder.gfx",
+                                 sprite, wonder->image_area) < 0)
+        return false;
+    snprintf(description_key, sizeof description_key, "%s_desc", wonder->id);
+    SDL_strlcpy(wonder->name, wonder->id, sizeof wonder->name);
+    wonder->description[0] = 0;
+    struct ck2_translation labels[3 + SDL_arraysize(wonder->upgrades)] = {
+        {wonder->id, wonder->name, sizeof wonder->name},
+        {description_key, wonder->description, sizeof wonder->description},
+        {"COMPLETED_CAP", wonder->completed_label, sizeof wonder->completed_label},
+    };
+    for (size_t i = 0; i < wonder->upgrade_count; ++i) {
+        SDL_strlcpy(wonder->upgrade_names[i], wonder->upgrades[i], sizeof wonder->upgrade_names[i]);
+        labels[3 + i] = (struct ck2_translation){wonder->upgrades[i], wonder->upgrade_names[i],
+                                                  sizeof wonder->upgrade_names[i]};
+    }
+    ck2_translate(menu->asset_root, labels, 3 + wonder->upgrade_count);
+    return true;
+}
+
+static void draw_wonder(SDL_Renderer *renderer, const struct menu_assets *assets, const struct menu *menu)
+{
+    const struct wonder_panel *wonder = &menu->wonder;
+    if (!wonder->open)
+        return;
+    setup_widget_draw(&wonder->background, renderer, menu->pointer);
+    setup_widget_draw(&wonder->terrain, renderer, (SDL_Point){-1, -1});
+    const struct setup_widget *image = &wonder->image;
+    const int frame = wonder->damaged ? 0 : SDL_clamp((int)wonder->stage, 0, image->frames - 1);
+    const SDL_Rect source = {image->area.w * frame, 0, image->area.w, image->area.h};
+    SDL_RenderCopy(renderer, image->texture, &source, &image->area);
+    setup_widget_draw(&wonder->frame, renderer, menu->pointer);
+    setup_widget_draw(&wonder->close, renderer, menu->pointer);
+    setup_widget_draw(&wonder->completed, renderer, wonder->completed.area.w > 0
+                      ? (SDL_Point){wonder->completed.area.x, wonder->completed.area.y} : menu->pointer);
+    const SDL_Rect tab = wonder->completed_area;
+    campaign_text(renderer, assets, wonder->completed_label, tab.x + tab.w / 2, tab.y);
+    for (size_t i = 0; i < wonder->upgrade_count && i < 9; ++i)
+        campaign_text(renderer, assets, wonder->upgrade_names[i], wonder->name_area.x + wonder->name_area.w / 2,
+                      tab.y + 30 + (int)i * 22);
+    SDL_SetTextureColorMod(assets->font, 40, 28, 17);
+    campaign_text(renderer, assets, wonder->name, wonder->name_area.x + wonder->name_area.w / 2, wonder->name_area.y);
+    SDL_SetTextureColorMod(assets->font, 255, 255, 255);
+    struct menu_assets small = {.font = menu->era.small_font};
+    memcpy(small.glyphs, menu->era.small_glyphs, sizeof small.glyphs);
+    setup_description(renderer, small.font ? &small : assets, wonder->description, wonder->description_area);
+    char status[96];
+    snprintf(status, sizeof status, "Stage %u%s", wonder->stage, wonder->damaged ? "  |  Damaged" : "");
+    campaign_text(renderer, assets, status, wonder->name_area.x + wonder->name_area.w / 2,
+                  wonder->description_area.y + wonder->description_area.h + 34);
+}
+
 static int load_holding_layout(struct menu *menu, SDL_Texture *background)
 {
     struct frontend_gui gui = {0};
@@ -447,6 +635,8 @@ static int load_holding_layout(struct menu *menu, SDL_Texture *background)
                 menu->holding_art_scale[i] = value;
         }
     }
+    if (valid)
+        bind_wonder_widget(menu, &gui, panel, "open_wonder_view", &menu->wonder.button);
     frontend_gui_free(&gui);
     if (!valid)
         return SDL_SetError("interface/province.gui: missing campaign holding layout");
@@ -869,12 +1059,178 @@ static void advance_campaign_day(struct menu *menu)
         construction_settlement_apply(&menu->construction, menu->selected->id, &menu->holdings);
 }
 
+enum { BAR_EXTENSION, BAR_PAUSE, BAR_SPEED, BAR_UP, BAR_DOWN, BAR_RESOURCE };
+
+static void load_campaign_topbar(struct menu *menu)
+{
+    if (menu->topbar_ready)
+        return;
+    static const char *const sprites[] = {
+        "topbar_right_bg_extension", "icon_topbar_pause_big", "strip_gamespeed",
+        "icon_topbar_speedup", "icon_topbar_speeddown", "icon_topbar_gold", "icon_topbar_prestige",
+        "icon_topbar_piety", "icon_topbar_demesnesize", "icon_topbar_vassallimit", "icon_topbar_vassalnr",
+        "icon_score",
+    };
+    static const char *const labels[] = {
+        "gold", "prestige", "piety", "demesnesize", "vassallimit", "vassalnr", "score", "topbar_date"
+    };
+    static const int shifts[] = {2, 2, 2, 1, 0, 0, 0, 2};
+    struct frontend_gui gui = {0};
+    const SDL_Point viewport = {WIDTH, HEIGHT};
+    if (frontend_gui_load_file(&gui, menu->asset_root, "interface/main.gui") < 0)
+        return;
+    SDL_Rect extension, shift;
+    bool ok = frontend_gui_rect(&gui, frontend_gui_find(&gui, -1, "topbar_right_bg_extension_position"),
+                                viewport, &extension) &&
+        frontend_gui_rect(&gui, frontend_gui_find(&gui, -1, "topbar_right_bg_offset"), viewport, &shift);
+    for (size_t i = 0; ok && i < SDL_arraysize(sprites); ++i) {
+        const int node = frontend_gui_find(&gui, -1, sprites[i]);
+        SDL_Rect area;
+        ok = frontend_gui_rect(&gui, node, viewport, &area) &&
+            setup_widget_load_node(&menu->topbar[i], menu->renderer, menu->asset_root, &gui, node, area) == 0;
+        if (ok && i >= BAR_RESOURCE)
+            menu->topbar[i].area.x += shift.x * shifts[i - BAR_RESOURCE];
+    }
+    for (size_t i = 0; ok && i < SDL_arraysize(labels); ++i) {
+        ok = frontend_gui_rect(&gui, frontend_gui_find(&gui, -1, labels[i]), viewport, &menu->topbar_values[i]);
+        menu->topbar_values[i].x += shift.x * shifts[i];
+    }
+    if (ok) {
+        menu->topbar[BAR_EXTENSION].area.x = WIDTH + extension.x;
+        menu->topbar[BAR_EXTENSION].area.y = extension.y;
+        menu->topbar_offset = shift.x;
+    }
+    if (ok) {
+        static const char *const keys[7][2] = {
+            {"STAT_WEALTH", "STAT_WEALTH_DESC"}, {"STAT_PRESTIGE", "STAT_PRESTIGE_DESC"},
+            {"STAT_PIETY", "STAT_PIETY_DESC"}, {"STAT_DEMESNE_SIZE", "STAT_DEMESNE_SIZE_DESC"},
+            {"STAT_VASSAL_LIMIT", "STAT_VASSAL_LIMIT_DESC"}, {"STAT_REALM_SIZE", "STAT_REALM_SIZE_DESC"},
+            {"STAT_SCORE", "STAT_SCORE_DESC"},
+        };
+        struct ck2_translation terms[14];
+        for (size_t i = 0; i < SDL_arraysize(keys); ++i) {
+            terms[2 * i] = (struct ck2_translation){keys[i][0], menu->topbar_labels[i], sizeof menu->topbar_labels[i]};
+            terms[2 * i + 1] = (struct ck2_translation){keys[i][1], menu->topbar_help[i], sizeof menu->topbar_help[i]};
+        }
+        ck2_translate(menu->asset_root, terms, SDL_arraysize(terms));
+    }
+    frontend_gui_free(&gui);
+    menu->topbar_ready = ok;
+    if (!ok) {
+        SDL_Log("Campaign top bar: %s", SDL_GetError());
+        for (size_t i = 0; i < SDL_arraysize(menu->topbar); ++i) {
+            SDL_DestroyTexture(menu->topbar[i].texture);
+            menu->topbar[i] = (struct setup_widget){0};
+        }
+    }
+}
+
+static unsigned campaign_day_interval(int speed)
+{
+    static const unsigned delay[] = {1000, 500, 250, 125, 62};
+    return delay[SDL_clamp(speed, 1, 5) - 1];
+}
+
+static void draw_campaign_topbar(SDL_Renderer *renderer, const struct menu_assets *assets,
+                                 const struct menu *menu)
+{
+    char date[48], gold[24];
+    format_campaign_date(date, sizeof date, menu->campaign.date);
+    snprintf(gold, sizeof gold, "%u", menu->campaign.treasury);
+    if (!menu->topbar_ready) {
+        campaign_text(renderer, assets, gold, 1408, 19);
+        SDL_RenderCopy(renderer, assets->hud_date, NULL, &(SDL_Rect){1331, 40, 216, 24});
+        campaign_text(renderer, assets, date, 1439, 41);
+        return;
+    }
+    struct setup_widget extension = menu->topbar[BAR_EXTENSION];
+    setup_widget_draw(&extension, renderer, menu->pointer);
+    extension.area.x += menu->topbar_offset;
+    setup_widget_draw(&extension, renderer, menu->pointer);
+    for (size_t i = BAR_PAUSE; i < BAR_RESOURCE + 7; ++i) {
+        if (i == BAR_SPEED) {
+            const struct setup_widget *widget = &menu->topbar[i];
+            const int frame = menu->time_running ? SDL_min(menu->campaign_speed, widget->frames - 1) : 0;
+            const SDL_Rect source = {widget->area.w * frame, 0, widget->area.w, widget->area.h};
+            SDL_RenderCopy(renderer, widget->texture, &source, &widget->area);
+        } else {
+            setup_widget_draw(&menu->topbar[i], renderer, menu->pointer);
+        }
+    }
+    const struct ruler_profile *ruler = realm_ruler(&menu->realms, menu->campaign_ruler_id);
+    for (size_t i = 0; i < 7; ++i) {
+        const SDL_Rect area = menu->topbar_values[i];
+        char value[32] = "-";
+        if (!i)
+            SDL_strlcpy(value, gold, sizeof value);
+        else if (i < RULER_RESOURCE_COUNT && ruler && (ruler->known_resources & (1u << i)))
+            snprintf(value, sizeof value, "%.0f", ruler->resources[i]);
+        campaign_text(renderer, assets, value, area.x + area.w / 2, area.y - 2);
+    }
+    const SDL_Rect area = menu->topbar_values[7];
+    int width = 0;
+    for (const unsigned char *p = (const unsigned char *)date; *p; ++p)
+        width += assets->glyphs[*p].advance;
+    campaign_text(renderer, assets, date, area.x + width / 2, area.y - 2);
+}
+
+static void draw_topbar_tooltip(SDL_Renderer *renderer, const struct menu_assets *assets,
+                                const struct menu *menu)
+{
+    if (!menu->topbar_ready)
+        return;
+    for (size_t i = 0; i < SDL_arraysize(menu->topbar_labels); ++i) {
+        SDL_Rect area = menu->topbar_values[i];
+        area.y = 0;
+        area.h = menu->topbar[BAR_PAUSE].area.y;
+        if (!SDL_PointInRect(&menu->pointer, &area))
+            continue;
+        if (menu->topbar_labels[i][0])
+            panel_tooltip(renderer, assets, menu->pointer, menu->topbar_labels[i],
+                          menu->topbar_help[i], centered_text);
+        return;
+    }
+}
+
 static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *assets,
                           const struct menu *menu)
 {
     if (menu->province_overlay)
         SDL_RenderCopy(renderer, menu->province_overlay, NULL, NULL);
 
+    blit(renderer, assets->hud_resources_left, 1260 + (menu->topbar_ready ? 2 * menu->topbar_offset : 0), 0);
+    blit(renderer, assets->hud_resources_right, 1422, 0);
+    blit(renderer, assets->hud_outliner, 1324, 213);
+    if (!menu->character.open)
+        blit(renderer, assets->hud_province, menu->holding_panel.x, menu->holding_panel.y);
+    blit(renderer, assets->hud_minimap, 1320, 696);
+    blit(renderer, assets->hud_map, 1329, 705);
+
+    char line[160];
+    draw_campaign_topbar(renderer, assets, menu);
+    campaign_text(renderer, assets, "Outliner", 1420, 220);
+
+    if (menu->character.open) {
+        character_view_draw(&menu->character, renderer, assets, menu->character.ruler.id == menu->campaign_ruler_id,
+                            menu->campaign.treasury, menu->pointer, centered_text);
+    } else {
+        const int center = 174;
+        if (menu->selected)
+            campaign_text(renderer, assets, menu->selected->name, center, 291);
+        const bool owns_selection = menu->selected && menu->selected->id == menu->home_province;
+        campaign_text(renderer, assets, owns_selection ? "Your county" : "Outside your county", 99, 349);
+        snprintf(line, sizeof line, "+%u gold per month", campaign_monthly_income(&menu->campaign));
+        campaign_text(renderer, assets, line, 99, 379);
+        snprintf(line, sizeof line, "Holdings: %zu / %zu", menu->holdings.count, menu->holdings.capacity);
+        SDL_SetTextureColorMod(assets->font, 36, 26, 16);
+        campaign_text(renderer, assets, line, center, 600);
+        SDL_SetTextureColorMod(assets->font, 255, 255, 255);
+
+        if (menu->selected)
+            draw_campaign_holdings(renderer, assets, menu);
+        if (menu->wonder.id[0] && menu->wonder.button.texture)
+            setup_widget_draw(&menu->wonder.button, renderer, menu->pointer);
+    }
     blit(renderer, assets->hud_ruler, 2, 0);
     if (menu->campaign_portrait)
         SDL_RenderCopy(renderer, menu->campaign_portrait, NULL, &(SDL_Rect){16, 18, 106, 106});
@@ -888,33 +1244,9 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
         SDL_RenderCopy(renderer, icon, &(SDL_Rect){0, 0, 32, 36},
                        &(SDL_Rect){146 + (int)i * 41, 15, 32, 36});
     }
-    blit(renderer, assets->hud_resources_left, 1260, 0);
-    blit(renderer, assets->hud_resources_right, 1422, 0);
-    blit(renderer, assets->hud_outliner, 1324, 213);
-    blit(renderer, assets->hud_province, menu->holding_panel.x, menu->holding_panel.y);
-    blit(renderer, assets->hud_minimap, 1320, 696);
-    blit(renderer, assets->hud_map, 1329, 705);
-
-    char line[160];
-    snprintf(line, sizeof line, "%u gold", menu->campaign.treasury);
-    campaign_text(renderer, assets, line, 1408, 19);
-    campaign_text(renderer, assets, "Outliner", 1420, 220);
-
-    const int center = 174;
-    if (menu->selected)
-        campaign_text(renderer, assets, menu->selected->name, center, 291);
-    const bool owns_selection = menu->selected && menu->selected->id == menu->home_province;
-    campaign_text(renderer, assets, owns_selection ? "Your county" : "Outside your county", 99, 349);
-    snprintf(line, sizeof line, "+%u gold per month", campaign_monthly_income(&menu->campaign));
-    campaign_text(renderer, assets, line, 99, 379);
-    snprintf(line, sizeof line, "Holdings: %zu / %zu", menu->holdings.count, menu->holdings.capacity);
-    SDL_SetTextureColorMod(assets->font, 36, 26, 16);
-    campaign_text(renderer, assets, line, center, 600);
-    SDL_SetTextureColorMod(assets->font, 255, 255, 255);
-
-    if (menu->selected)
-        draw_campaign_holdings(renderer, assets, menu);
     draw_buildings(renderer, assets, menu);
+    draw_wonder(renderer, assets, menu);
+    draw_topbar_tooltip(renderer, assets, menu);
 }
 
 static void select_province(struct menu *menu, const struct province *province)
@@ -930,6 +1262,7 @@ static void select_province(struct menu *menu, const struct province *province)
         holdings_load(&menu->holdings, menu->asset_root, province, menu->start_date);
         char *history = province_history_read(province, menu->asset_root);
         construction_history(&menu->construction, history, menu->start_date);
+        read_wonder(&menu->wonder, history, menu->start_date);
         SDL_free(history);
         construction_settlement_apply(&menu->construction, id, &menu->holdings);
         menu->holding_province = id;
@@ -1359,6 +1692,10 @@ static void open_campaign(struct menu *menu, SDL_Window *window, bool new_game)
     }
     if (new_game) {
         construction_reset(&menu->construction);
+        menu->character.open = false;
+        menu->character.ruler.id = 0;
+        menu->character.show_vassals = false;
+        menu->character.vassal_scroll = 0;
         menu->building_open = false;
         menu->selected = NULL;
         menu->holding_province = 0;
@@ -1390,6 +1727,10 @@ static void open_campaign(struct menu *menu, SDL_Window *window, bool new_game)
     }
     if (!load_realms(menu, window, menu->start_date))
         menu->realms_visible = false;
+    load_campaign_topbar(menu);
+    if (new_game)
+        menu->campaign_speed = 4;
+    menu_sound_stop_country(&menu->music);
     menu->screen = CAMPAIGN;
     menu->focus = TOGGLE_TIME;
     menu->time_running = false;
@@ -1431,6 +1772,87 @@ static SDL_Texture *setup_character_portrait(struct menu *menu, const struct rul
     SDL_strlcpy(ruler.culture, profile->culture_key, sizeof ruler.culture);
     SDL_strlcpy(ruler.religion, profile->religion_key, sizeof ruler.religion);
     return portrait_render(&menu->portrait_source, menu->renderer, menu->asset_root, &ruler);
+}
+
+static SDL_Texture *character_relative_portrait(void *context, const struct ruler_profile *profile)
+{
+    return setup_character_portrait(context, profile);
+}
+
+static bool campaign_wonder_click(struct menu *menu, SDL_Point point)
+{
+    struct wonder_panel *wonder = &menu->wonder;
+    if (wonder->open) {
+        if (SDL_PointInRect(&point, &wonder->close.area))
+            wonder->open = false;
+        return SDL_PointInRect(&point, &wonder->background.area);
+    }
+    if (menu->character.open || menu->building_open || !wonder->id[0] || !wonder->button.texture ||
+        !SDL_PointInRect(&point, &wonder->button.area))
+        return false;
+    wonder->open = load_wonder_view(menu);
+    if (wonder->open)
+        menu_sound_play(&menu->music, CUE_GENERIC);
+    else
+        SDL_Log("Great Works: %s", SDL_GetError());
+    return true;
+}
+
+static void inspect_campaign_character(struct menu *menu, const struct ruler_profile *source)
+{
+    struct character_view *view = &menu->character;
+    if (!source)
+        return;
+    if (!view->background.texture && character_view_load(view, menu->renderer, menu->asset_root,
+                                                          (SDL_Point){WIDTH, HEIGHT}) < 0) {
+        SDL_Log("%s", SDL_GetError());
+        return;
+    }
+    if (view->ruler.id != source->id) {
+        struct ruler_profile profile = *source;
+        /* Marriage history can be recorded only on the other spouse. */
+        if (!profile.spouse && view->partner.profile.id == profile.id && !view->ruler.deceased)
+            profile.spouse = view->ruler.id;
+        character_view_set(view, menu->asset_root, menu->start_date, &profile, menu->renderer,
+                           character_relative_portrait, menu);
+        character_view_titles(view, &menu->realms, menu->renderer, menu->asset_root);
+    }
+    menu->building_open = false;
+    view->open = true;
+    menu_sound_play(&menu->music, CUE_GENERIC);
+}
+
+static bool campaign_character_click(struct menu *menu, SDL_Point point)
+{
+    static const SDL_Rect player_portrait = {2, 0, 130, 130};
+    struct character_view *view = &menu->character;
+    if (SDL_PointInRect(&point, &player_portrait)) {
+        if (view->open && view->ruler.id == menu->campaign_ruler_id)
+            view->open = false;
+        else
+            inspect_campaign_character(menu, realm_ruler(&menu->realms, menu->campaign_ruler_id));
+        return true;
+    }
+    if (!view->open)
+        return false;
+    if (SDL_PointInRect(&point, &view->close.area)) {
+        view->open = false;
+        return true;
+    }
+    unsigned selected_id;
+    const struct ruler_profile *selected = character_view_pick(view, point, &selected_id);
+    if (selected || selected_id) {
+        inspect_campaign_character(menu, selected ? selected : realm_ruler(&menu->realms, selected_id));
+        return true;
+    }
+    if (SDL_PointInRect(&point, &view->tabs[0].area))
+        view->show_vassals = false;
+    if (SDL_PointInRect(&point, &view->tabs[2].area) && !view->show_vassals) {
+        view->show_vassals = true;
+        character_view_vassals(view, &menu->realms, menu->renderer, menu->asset_root,
+                               character_relative_portrait, menu);
+    }
+    return SDL_PointInRect(&point, &view->background.area);
 }
 
 static void refresh_vassal_art(struct menu *menu, const struct realm_title_info *title)
@@ -1660,15 +2082,6 @@ static void draw(SDL_Renderer *renderer,
             texture = hovered || !enabled ? menu->era.button_hover : menu->era.button;
         const Uint8 brightness = !enabled ? 145 : button->action == menu->focus ? 255 : 235;
         const char *label = button_label(button, menu);
-        char date_label[72];
-        if (button->action == TOGGLE_TIME) {
-            texture = assets->hud_date;
-            char date[48];
-            format_campaign_date(date, sizeof date, menu->campaign.date);
-            snprintf(date_label, sizeof date_label, "%s%s", date, menu->time_running ? "" : "  (Paused)");
-            label = date_label;
-        }
-
         if (menu->screen == MAP_SETUP) {
             const enum lobby_element element = button->action == BACK ? LOBBY_BACK : LOBBY_PLAY;
             const struct setup_widget *widget = &menu->toolbar.lobby[element];
@@ -1704,6 +2117,18 @@ static enum action hit_test(const struct menu *menu, int x, int y)
     size_t count;
     const struct button *buttons = buttons_for(menu, &count);
     const SDL_Point point = {x, y};
+    if (menu->screen == CAMPAIGN) {
+        if (menu->topbar_ready) {
+            if (SDL_PointInRect(&point, &menu->topbar[BAR_UP].area))
+                return SPEED_UP;
+            if (SDL_PointInRect(&point, &menu->topbar[BAR_DOWN].area))
+                return SPEED_DOWN;
+            if (SDL_PointInRect(&point, &menu->topbar[BAR_PAUSE].area))
+                return TOGGLE_TIME;
+        } else if (SDL_PointInRect(&point, &(SDL_Rect){1331, 40, 216, 24})) {
+            return TOGGLE_TIME;
+        }
+    }
     for (size_t i = 0; i < count; ++i) {
         if (SDL_PointInRect(&point, &buttons[i].area))
             return buttons[i].action;
@@ -1722,7 +2147,7 @@ static void activate(struct menu *menu, SDL_Window *window, enum action action)
     case CONTENT_SETTINGS: cue = CUE_GENERIC; break;
     case NEXT_MONTH: cue = CUE_TIME_FORWARD; break;
     case TOGGLE_REALMS: case TOGGLE_TIME: cue = CUE_GENERIC; break;
-    case SELECT_HOME: cue = CUE_COUNTRY; break;
+    case SELECT_HOME: cue = CUE_GENERIC; break;
     default: break;
     }
     menu_sound_play(&menu->music, cue);
@@ -1845,9 +2270,14 @@ static void activate(struct menu *menu, SDL_Window *window, enum action action)
             menu->realms_visible = load_realms(menu, window, date);
         break;
     }
+    case SPEED_UP:
+    case SPEED_DOWN:
+        menu->campaign_speed = SDL_clamp(menu->campaign_speed + (action == SPEED_UP ? 1 : -1), 1, 5);
+        menu->next_day = SDL_GetTicks64() + campaign_day_interval(menu->campaign_speed);
+        break;
     case TOGGLE_TIME:
         menu->time_running = !menu->time_running;
-        menu->next_day = SDL_GetTicks64() + 125;
+        menu->next_day = SDL_GetTicks64() + campaign_day_interval(menu->campaign_speed);
         break;
     case NEXT_MONTH:
         menu->time_running = false;
@@ -2036,7 +2466,10 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
             if (menu->screen == MAP_SETUP && action == UNAVAILABLE &&
                 setup_select(menu, window, (SDL_Point){x, y}))
                 break;
-            if (menu->screen == CAMPAIGN && building_click(menu, (SDL_Point){x, y}))
+            if (menu->screen == CAMPAIGN &&
+                (campaign_wonder_click(menu, (SDL_Point){x, y}) ||
+                 campaign_character_click(menu, (SDL_Point){x, y}) ||
+                 (!menu->character.open && building_click(menu, (SDL_Point){x, y}))))
                 break;
             if (menu->screen == CAMPAIGN && action == UNAVAILABLE &&
                 campaign_map_area((SDL_Point){x, y})) {
@@ -2045,7 +2478,7 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
                     const struct province *province = province_at(&menu->provinces, world.x, world.y);
                     if (province && province != menu->selected) {
                         select_province(menu, province);
-                        menu_sound_play(&menu->music, CUE_COUNTRY);
+                        menu_sound_play(&menu->music, CUE_GENERIC);
                     }
                 }
             } else {
@@ -2057,6 +2490,20 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
         if (navigable(menu->screen)) {
             const int delta = SDL_clamp(event->wheel.y, -6, 6);
             const int scroll = event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -delta : delta;
+            struct character_view *view = &menu->character;
+            if (menu->screen == CAMPAIGN && view->open &&
+                SDL_PointInRect(&menu->pointer, &view->background.area)) {
+                if (view->show_vassals && SDL_PointInRect(&menu->pointer, &view->vassal_list)) {
+                    const int maximum = SDL_max(0, (int)view->vassal_count - CHARACTER_VASSAL_ROWS);
+                    const size_t first = (size_t)SDL_clamp((int)view->vassal_scroll - scroll, 0, maximum);
+                    if (first != view->vassal_scroll) {
+                        view->vassal_scroll = first;
+                        character_view_vassals(view, &menu->realms, menu->renderer, menu->asset_root,
+                                               character_relative_portrait, menu);
+                    }
+                }
+                break;
+            }
             if (menu->screen == CAMPAIGN && menu->building_open &&
                 SDL_PointInRect(&menu->pointer, &menu->building_panel) && !settlement_view(menu)) {
                 scroll_buildings(menu, scroll);
@@ -2114,8 +2561,12 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
         switch (event->key.keysym.sym) {
         case SDLK_ESCAPE:
             if (!event->key.repeat) {
-                if (menu->screen == CAMPAIGN && menu->building_open)
+                if (menu->screen == CAMPAIGN && menu->wonder.open)
+                    menu->wonder.open = false;
+                else if (menu->screen == CAMPAIGN && menu->building_open)
                     menu->building_open = false;
+                else if (menu->screen == CAMPAIGN && menu->character.open)
+                    menu->character.open = false;
                 else
                     activate(menu, window, menu->screen == MAIN_MENU ? QUIT : BACK);
             }
@@ -2238,7 +2689,7 @@ static int run_game(const char *root)
         const bool day_elapsed = menu.time_running && now >= menu.next_day;
         if (day_elapsed) {
             advance_campaign_day(&menu);
-            menu.next_day = now + 125;
+            menu.next_day = now + campaign_day_interval(menu.campaign_speed);
         }
         const bool content_changed = poll_content_settings(&menu, window);
         struct map_view *view = world_screen(menu.screen) ? &menu.campaign_map : &menu.menu_map;
@@ -2275,6 +2726,16 @@ cleanup:
     setup_toolbar_free(&menu.toolbar);
     settings_free(&menu.settings);
     construction_free(&menu.construction);
+    character_view_free(&menu.character);
+    clear_wonder(&menu.wonder);
+    SDL_DestroyTexture(menu.wonder.button.texture);
+    SDL_DestroyTexture(menu.wonder.background.texture);
+    SDL_DestroyTexture(menu.wonder.close.texture);
+    SDL_DestroyTexture(menu.wonder.terrain.texture);
+    SDL_DestroyTexture(menu.wonder.frame.texture);
+    SDL_DestroyTexture(menu.wonder.completed.texture);
+    for (size_t i = 0; i < SDL_arraysize(menu.topbar); ++i)
+        SDL_DestroyTexture(menu.topbar[i].texture);
     SDL_DestroyTexture(menu.building_close);
     SDL_DestroyTexture(menu.building_row);
     SDL_DestroyTexture(menu.building_bg);
@@ -2302,7 +2763,7 @@ int main(int argc, char **argv)
     if (argc == 3 && strcmp(argv[1], "--assets") == 0) {
         root = argv[2];
     } else if (argc != 1) {
-        fputs("Usage: ck2-game [--assets CK2_INSTALL_DIRECTORY]\n", stderr);
+        fputs("Usage: OpenCK2-game [--assets CK2_INSTALL_DIRECTORY]\n", stderr);
         return EXIT_FAILURE;
     }
 

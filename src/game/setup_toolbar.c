@@ -31,7 +31,7 @@ struct gfx_source {
 
 static const char *const gfx_files[] = {
     "interface/main.gfx", "interface/frontend.gfx", "interface/alternate_start.gfx",
-    "interface/generalstuff.gfx",
+    "interface/generalstuff.gfx", "interface/domestic_dynastic.gfx", "interface/wonder.gfx",
 };
 
 static bool integer(struct token t, int *result)
@@ -87,28 +87,9 @@ static SDL_Texture *load_sprite(SDL_Renderer *renderer, const char *root, const 
     return ck2_load_texture(renderer, root, path);
 }
 
-static int load_widget(struct setup_widget *widget, SDL_Renderer *renderer, const char *root,
-                       const char *gui, const struct gfx_source gfx[], const char *name, SDL_Rect area)
+static int load_sprite_definition(struct setup_widget *widget, SDL_Renderer *renderer, const char *root,
+                                  const char *definition, struct token sprite, const char *name, SDL_Rect area)
 {
-    struct token sprite = field(gui, "quadTextureSprite");
-    if (!sprite.size)
-        sprite = field(gui, "spriteType");
-    const char *definition = NULL;
-    size_t priority = 0;
-    for (size_t i = 0; i < SDL_arraysize(gfx_files); ++i) {
-        const char *scope = gfx[i].data;
-        if (!scope || (definition && gfx[i].priority <= priority) ||
-            !is(find(&scope, "spriteTypes"), "{"))
-            continue;
-        const char *candidate = named_block(scope, sprite, 1);
-        if (candidate) {
-            definition = candidate;
-            priority = gfx[i].priority;
-        }
-    }
-    if (!definition)
-        return SDL_SetError("interface/frontend.gui: missing sprite '%.*s' for %s",
-                            (int)sprite.size, sprite.size ? sprite.start : "", name);
     struct token texture = field(definition, "texturefile");
     if (!texture.size)
         texture = field(definition, "textureFile");
@@ -142,6 +123,46 @@ static int load_widget(struct setup_widget *widget, SDL_Renderer *renderer, cons
             widget->area.w <= 0 || widget->area.h <= 0)
             return SDL_SetError("Invalid CK2 difficulty progress dimensions");
     }
+    return 0;
+}
+
+int setup_widget_load_sprite(struct setup_widget *widget, SDL_Renderer *renderer, const char *root,
+                            const char *file, const char *name, SDL_Rect area)
+{
+    char *data = load_data(root, file);
+    const char *scope = data;
+    const struct token sprite = {name, strlen(name)};
+    const char *definition = scope && is(find(&scope, "spriteTypes"), "{") ? named_block(scope, sprite, 1) : NULL;
+    const int status = definition ? load_sprite_definition(widget, renderer, root, definition, sprite, name, area)
+                                  : SDL_SetError("%s: missing sprite %s", file, name);
+    SDL_free(data);
+    return status;
+}
+
+static int load_widget(struct setup_widget *widget, SDL_Renderer *renderer, const char *root,
+                       const char *gui, const struct gfx_source gfx[], const char *name, SDL_Rect area)
+{
+    struct token sprite = field(gui, "quadTextureSprite");
+    if (!sprite.size)
+        sprite = field(gui, "spriteType");
+    const char *definition = NULL;
+    size_t priority = 0;
+    for (size_t i = 0; i < SDL_arraysize(gfx_files); ++i) {
+        const char *scope = gfx[i].data;
+        if (!scope || (definition && gfx[i].priority <= priority) ||
+            !is(find(&scope, "spriteTypes"), "{"))
+            continue;
+        const char *candidate = named_block(scope, sprite, 1);
+        if (candidate) {
+            definition = candidate;
+            priority = gfx[i].priority;
+        }
+    }
+    if (!definition)
+        return SDL_SetError("interface/frontend.gui: missing sprite '%.*s' for %s",
+                            (int)sprite.size, sprite.size ? sprite.start : "", name);
+    if (load_sprite_definition(widget, renderer, root, definition, sprite, name, area) < 0)
+        return -1;
     const struct token shortcut = field(gui, "shortcut");
     if (shortcut.size) {
         char key[32];
@@ -149,6 +170,26 @@ static int load_widget(struct setup_widget *widget, SDL_Renderer *renderer, cons
         widget->shortcut = SDL_GetKeyFromName(key);
     }
     return 0;
+}
+
+int setup_widget_load_node(struct setup_widget *widget, SDL_Renderer *renderer, const char *root,
+                           const struct frontend_gui *gui, int node, SDL_Rect area)
+{
+    if (node < 0)
+        return SDL_SetError("Missing CK2 widget");
+    struct gfx_source gfx[SDL_arraysize(gfx_files)] = {0};
+    for (size_t i = 0; i < SDL_arraysize(gfx); ++i) {
+        char *path = ck2_asset_path_with_priority(root, gfx_files[i], &gfx[i].priority);
+        if (path)
+            gfx[i].data = SDL_LoadFile(path, NULL);
+        free(path);
+    }
+    char name[80];
+    copy_token(name, sizeof name, gui->blocks[node].name);
+    const int status = load_widget(widget, renderer, root, gui->blocks[node].body, gfx, name, area);
+    for (size_t i = 0; i < SDL_arraysize(gfx); ++i)
+        SDL_free(gfx[i].data);
+    return status;
 }
 
 struct lobby_binding {

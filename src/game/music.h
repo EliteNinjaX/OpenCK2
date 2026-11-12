@@ -21,6 +21,7 @@ struct menu_music {
 void menu_music_start(struct menu_music *music, const char *asset_root);
 void menu_music_set_volume(const struct menu_music *music, int master, int track, int effects);
 void menu_sound_play(struct menu_music *, enum menu_cue);
+void menu_sound_stop_country(const struct menu_music *);
 void menu_sound_finish(struct menu_music *);
 void menu_music_stop(struct menu_music *music);
 

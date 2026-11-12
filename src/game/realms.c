@@ -414,6 +414,21 @@ bool realm_title_info(const struct realm_map *map, const char *id, struct realm_
     return true;
 }
 
+size_t realm_held_titles(const struct realm_map *map, unsigned holder, struct realm_title_info *out, size_t capacity)
+{
+    const struct realm_history *history = map->history;
+    size_t count = 0;
+    if (!history || !holder)
+        return 0;
+    for (int rank = 5; rank >= 1 && count < capacity; --rank)
+        for (size_t i = 0; i < history->count && count < capacity; ++i) {
+            const struct title *title = &history->titles[i];
+            if (title->holder == holder && title->rank == rank)
+                title_info(title, &out[count++]);
+        }
+    return count;
+}
+
 bool realm_primary_title(const struct realm_map *map, unsigned holder, struct realm_title_info *info)
 {
     const struct realm_history *h = map->history;

@@ -52,6 +52,10 @@ struct setup_toolbar {
 
 int setup_toolbar_load(struct setup_toolbar *, SDL_Renderer *, const char *root, int width);
 int setup_lobby_load(struct setup_toolbar *, SDL_Renderer *, const char *root, SDL_Point viewport);
+int setup_widget_load_sprite(struct setup_widget *, SDL_Renderer *, const char *,
+                             const char *, const char *, SDL_Rect);
+int setup_widget_load_node(struct setup_widget *, SDL_Renderer *, const char *,
+                           const struct frontend_gui *, int, SDL_Rect);
 void setup_widget_draw(const struct setup_widget *, SDL_Renderer *, SDL_Point);
 bool setup_lobby_deferred(const struct setup_toolbar *, SDL_Point);
 void setup_toolbar_free(struct setup_toolbar *);
