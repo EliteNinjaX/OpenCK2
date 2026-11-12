@@ -25,5 +25,14 @@ struct ck2_translation {
     size_t capacity;
 };
 void ck2_translate(const char *, struct ck2_translation *, size_t);
+/* The selected language is loaded once into a shared catalog. Values are valid
+ * until the next ck2_locale_reload(), which must not happen during rendering. */
+int ck2_locale_reload(const char *root, int language);
+void ck2_locale_free(void);
+const char *ck2_localize(const char *key, const char *fallback);
+int ck2_locale_language(void);
+void ck2_locale_format(char *, size_t, const char *key, const char *fallback,
+                       const char *variable, const char *value);
+
 
 #endif

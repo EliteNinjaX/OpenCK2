@@ -1,7 +1,9 @@
 #include "../open_launcher/asset_paths.h"
 #include "ck2_script.h"
+#include "localization_core.h"
 #include "../open_launcher/install.h"
 #include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -108,56 +110,83 @@ char *load_from_directory(const char *root, const char *directory, const char *n
 
 
 
-static int compare_translation(const void *a, const void *b)
-{
-    return strcmp(((const struct ck2_translation *)a)->key,
-                  ((const struct ck2_translation *)b)->key);
-}
+static struct loc_catalog current_locale;
+static bool locale_ready;
 
-void ck2_translate(const char *root, struct ck2_translation *terms, size_t count)
+int ck2_locale_reload(const char *root, int language)
 {
-    qsort(terms, count, sizeof *terms, compare_translation);
+    if (language < 0 || language >= CK2_LANGUAGE_COUNT) return -1;
+    struct loc_catalog next;
+    loc_catalog_init(&next, (enum ck2_language)language);
     struct ck2_asset_files files = ck2_list_assets(root, "localisation");
-    for (size_t i = 0; i < files.count; ++i) {
+    int result = 0;
+    for (size_t i = 0; i < files.count && !result; ++i) {
         const char *name = files.names[i];
-        const size_t len = strlen(name);
-        if (len < 4 || strcmp(name + len - 4, ".csv"))
-            continue;
+        size_t length = strlen(name);
+        if (length < 4 || strcmp(name + length - 4, ".csv")) continue;
         char *data = load_from_directory(root, "localisation", name);
-        for (const char *p = data; p && *p;) {
+        for (const char *p = data; p && *p && !result;) {
             const char *end = strchr(p, '\n');
-            if (!end)
-                end = p + strlen(p);
-            const char *sep = memchr(p, ';', (size_t)(end - p));
-            char key[128];
-            if (sep && sep > p && *p != '#' && (size_t)(sep - p) < sizeof key) {
-                copy_token(key, sizeof key, (struct token){p, (size_t)(sep - p)});
-                const struct ck2_translation match = {.key = key};
-                struct ck2_translation *term = bsearch(&match, terms, count, sizeof *terms,
-                                                       compare_translation);
-                const char *last = memchr(sep + 1, ';', (size_t)(end - (sep + 1)));
-                if (term && last && last > sep + 1) {
-                    while (term > terms && !strcmp(term[-1].key, key))
-                        --term;
-                    for (; term < terms + count && !strcmp(term->key, key); ++term) {
-                        size_t n = 0;
-                        for (const char *s = sep + 1; s < last && n + 1 < term->capacity; ++s) {
-                            if (*s == '\\' && s + 1 < last && s[1] == 'n') {
-                                term->text[n++] = ' ';
-                                ++s;
-                            } else if ((unsigned char)*s == 0xa7 && s + 1 < last) {
-                                ++s;
-                            } else {
-                                term->text[n++] = (unsigned char)*s == 0x92 ? '\'' : *s;
-                            }
-                        }
-                        term->text[n] = '\0';
-                    }
-                }
-            }
+            if (!end) end = p + strlen(p);
+            if (!loc_catalog_add_line(&next, p, (size_t)(end - p))) result = -1;
             p = *end ? end + 1 : end;
         }
         SDL_free(data);
     }
     ck2_free_asset_files(&files);
+    if (result || !next.count) {loc_catalog_free(&next); return -1;}
+    if (locale_ready) loc_catalog_free(&current_locale);
+    current_locale = next;
+    locale_ready = true;
+    return 0;
+}
+
+void ck2_locale_free(void)
+{
+    if (locale_ready) loc_catalog_free(&current_locale);
+    locale_ready = false;
+}
+
+int ck2_locale_language(void)
+{
+    return locale_ready ? (int)current_locale.language : CK2_ENGLISH;
+}
+
+const char *ck2_localize(const char *key, const char *fallback)
+{
+    const char *text = locale_ready ? loc_catalog_find(&current_locale, key) : NULL;
+    return text && *text ? text : fallback ? fallback : key;
+}
+
+void ck2_locale_format(char *out, size_t capacity, const char *key, const char *fallback,
+                       const char *variable, const char *value)
+{
+    if (!out || !capacity) return;
+    const char *template = ck2_localize(key, fallback);
+    char placeholder[100];
+    snprintf(placeholder, sizeof placeholder, "$%s$", variable ? variable : "");
+    const size_t pattern = strlen(placeholder);
+    size_t j = 0;
+    while (*template && j + 1 < capacity) {
+        if (pattern > 2 && !strncmp(template, placeholder, pattern)) {
+            const char *replacement = value ? value : "";
+            while (*replacement && j + 1 < capacity) out[j++] = *replacement++;
+            template += pattern;
+        } else out[j++] = *template++;
+    }
+    out[j] = 0;
+}
+
+void ck2_translate(const char *root, struct ck2_translation *terms, size_t count)
+{
+    (void)root;
+    for (size_t i = 0; i < count; ++i) {
+        const char *text = ck2_localize(terms[i].key, "");
+        if (terms[i].text && terms[i].capacity) {
+            size_t n = strlen(text);
+            if (n >= terms[i].capacity) n = terms[i].capacity - 1;
+            memcpy(terms[i].text, text, n);
+            terms[i].text[n] = 0;
+        }
+    }
 }

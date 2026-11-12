@@ -1,10 +1,13 @@
 #include "settings.h"
+#include "ck2_script.h"
+#include "localization_core.h"
+#include <stdio.h>
 
 #include <string.h>
 
 enum { TAB, LEFT, RIGHT, THUMB, CHECKBOX, SPRITE_COUNT };
 enum kind { CHOICE, SLIDER, CHECK };
-enum option { DEFERRED, RESOLUTION, WINDOW_MODE, MASTER_VOLUME, MUSIC_VOLUME, EFFECT_VOLUME };
+enum option { DEFERRED, RESOLUTION, WINDOW_MODE, MASTER_VOLUME, MUSIC_VOLUME, EFFECT_VOLUME, LANGUAGE };
 
 struct row {
     const char *label;
@@ -17,7 +20,7 @@ struct row {
 static const struct row game[] = {
     {"Difficulty", CHOICE, DEFERRED, "Normal", 0},
     {"Autosave Interval", CHOICE, DEFERRED, "Yearly", 0},
-    {"Language", CHOICE, DEFERRED, "English", 0},
+    {"Language", CHOICE, LANGUAGE, "English", 0},
     {"Disable Wikipedia Links", CHECK, DEFERRED, NULL, 0},
     {"Disable All Hints", CHECK, DEFERRED, NULL, 1},
     {"Autosave to Cloud", CHECK, DEFERRED, NULL, 0},
@@ -65,6 +68,40 @@ static const SDL_Point resolutions[] = {
 };
 
 enum { TAB_COUNT = SDL_arraysize(tabs), TRACK_START = 838, TRACK_END = 928 };
+/* Keys correspond to the original CK2 localisation archive. Unsupported rows
+ * deliberately keep an English fallback rather than inventing translations. */
+static const char *setting_row_key(const char *label)
+{
+    static const struct { const char *label; const char *key; } mappings[] = {
+        {"Difficulty", "SM_DIFFICULTY"},
+        {"Autosave Interval", "SM_AUTOSAVE_INTERVAL"},
+        {"Language", "SM_LANGUAGE"},
+        {"Disable Wikipedia Links", "SM_DISABLEWIKIPEDIA"},
+        {"Disable All Hints", "SM_DISABLEHINTS"},
+        {"Autosave to Cloud", "SM_AUTOSAVETOCLOUD"},
+        {"Compress Autosaves", "SM_COMPRESSAUTOSAVES"},
+        {"Steam Rich Presence", "SM_STEAMRICH"},
+        {"Resolution", "SM_RESOLUTION"},
+        {"Window Mode", "SM_WINDOWMODE"},
+        {"Multisample Level", "SM_MULTISAMPLE"},
+        {"Refresh Rate", "SM_REFRESH_RATE"},
+        {"UI Scale (experimental)", "SM_UI_SCALE"},
+        {"Gamma", "SM_GAMMA"},
+        {"Master", "SM_MASTER_VOLUME"},
+        {"Effect", "SM_EFFECT_VOLUME"},
+        {"Music", "SM_MUSIC_VOLUME"},
+        {"Scroll Speed", "SM_SCROLL_SPEED"},
+        {"Zoom Speed", "SM_ZOOM_SPEED"},
+        {"Camera Tilt", "SM_CAMERA_TILT"},
+        {"Death Sounds", "SM_DEATH_SOUND"},
+        {"Context Sensitive Music", "SM_CONTEXTMUSIC"},
+        {"Dynamic Ambient Sounds", "SM_CONTEXTSOUND"},
+    };
+    for (size_t i = 0; i < SDL_arraysize(mappings); ++i)
+        if (strcmp(label, mappings[i].label) == 0) return mappings[i].key;
+    return NULL;
+}
+
 static const SDL_Rect frame = {580, 140, 440, 630};
 static const SDL_Rect heading = {700, 249, 200, 44};
 static const SDL_Rect back = {663, 662, 127, 35};
@@ -77,7 +114,24 @@ int settings_load(struct settings *settings, SDL_Renderer *renderer, const char 
         "gfx/interface/slider_right.dds", "gfx/interface/scrollbar_slider_2.dds",
         "gfx/interface/checkbox_default.dds",
     };
+    settings->asset_root = root;
     settings->applied = (struct settings_values){.resolution = 1, .master = 100, .music = 100, .effects = 100};
+    /* Language is a user preference, never written into CK2's original files. */
+    char *prefs = SDL_GetPrefPath("OpenCK2", "Launcher");
+    if (prefs) {
+        char filename[1024];
+        snprintf(filename, sizeof filename, "%s%s", prefs, "language.txt");
+        FILE *saved = fopen(filename, "r");
+        int language = 0;
+        if (saved) {
+            if (fscanf(saved, "%d", &language) == 1 && language >= 0 && language < CK2_LANGUAGE_COUNT)
+                settings->applied.language = language;
+            fclose(saved);
+        }
+        SDL_free(prefs);
+    }
+    if (ck2_locale_reload(root, settings->applied.language) < 0)
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "CK2 localisation not available; UI fallbacks retained");
     for (int i = 0; i < SPRITE_COUNT; ++i) {
         settings->sprites[i] = ck2_load_texture(renderer, root, paths[i]);
         if (!settings->sprites[i])
@@ -150,7 +204,7 @@ void settings_unavailable_tooltip(SDL_Renderer *renderer, const struct menu_asse
     SDL_SetRenderDrawColor(renderer, 123, 75, 69, 255);
     SDL_RenderDrawRect(renderer, &box);
     SDL_SetTextureColorMod(assets->font, 255, 105, 105);
-    label(renderer, assets, text, "Not developed yet", box.x + box.w / 2, box.y + 4);
+    label(renderer, assets, text, ck2_localize("NOT_IMPLEMENTED", "Not developed yet"), box.x + box.w / 2, box.y + 4);
     SDL_SetTextureColorMod(assets->font, 255, 255, 255);
 }
 
@@ -182,10 +236,12 @@ static void draw_row(const struct settings *settings, SDL_Renderer *renderer,
 
     const Uint8 brightness = row->option == DEFERRED ? 176 : 255;
     SDL_SetTextureColorMod(assets->font, brightness, brightness, brightness);
+    const char *key = setting_row_key(row->label);
+    const char *localized = key ? ck2_localize(key, row->label) : row->label;
     if (stacked)
-        label(renderer, assets, text, row->label, 800, area.y);
+        label(renderer, assets, text, localized, 800, area.y);
     else
-        left_label(renderer, assets, text, row->label, row->kind == CHECK ? 680 : 650, y);
+        left_label(renderer, assets, text, localized, row->kind == CHECK ? 680 : 650, y);
     if (row->kind == CHECK) {
         const SDL_Rect sprite = {row->initial * 24, 0, 24, 24};
         SDL_RenderCopy(renderer, sprites[CHECKBOX], &sprite, &(SDL_Rect){650, y - 1, 24, 24});
@@ -206,6 +262,8 @@ static void draw_row(const struct settings *settings, SDL_Renderer *renderer,
             value = dimensions;
         } else if (row->option == WINDOW_MODE) {
             value = settings->draft.borderless ? "Borderless" : "Windowed";
+        } else if (row->option == LANGUAGE) {
+            value = loc_language_name((enum ck2_language)settings->draft.language);
         }
         label(renderer, assets, text, value, 883, y);
     }
@@ -223,12 +281,13 @@ void settings_draw(const struct settings *settings, SDL_Renderer *renderer,
 {
     SDL_RenderCopy(renderer, assets->dialog_frame, NULL, &frame);
     SDL_RenderCopy(renderer, assets->dialog_heading, NULL, &heading);
-    label(renderer, assets, text, "Settings", 800, 260);
+    label(renderer, assets, text, ck2_localize("SM_SETTINGS", "Settings"), 800, 260);
     for (int i = 0; i < TAB_COUNT; ++i) {
         const SDL_Rect area = tab_area(i);
         const SDL_Rect sprite = {i == settings->tab ? 64 : 0, 0, 64, 32};
         SDL_RenderCopy(renderer, settings->sprites[TAB], &sprite, &area);
-        label(renderer, assets, text, tabs[i].label, area.x + area.w / 2, area.y + 7);
+        static const char *const tab_keys[] = {"SM_GAME", "SM_VIDEO", "SM_AUDIO", "SM_CONTROLS"};
+        label(renderer, assets, text, ck2_localize(tab_keys[i], tabs[i].label), area.x + area.w / 2, area.y + 7);
     }
 
     for (int i = 0; i < tabs[settings->tab].count; ++i)
@@ -237,8 +296,8 @@ void settings_draw(const struct settings *settings, SDL_Renderer *renderer,
                    assets->compact_hover : assets->compact_button, NULL, &back);
     SDL_RenderCopy(renderer, SDL_PointInRect(&settings->pointer, &apply) ?
                    assets->compact_hover : assets->compact_button, NULL, &apply);
-    label(renderer, assets, text, "Back", back.x + back.w / 2, back.y + 6);
-    label(renderer, assets, text, "Apply", apply.x + apply.w / 2, apply.y + 6);
+    label(renderer, assets, text, ck2_localize("SM_BACK", "Back"), back.x + back.w / 2, back.y + 6);
+    label(renderer, assets, text, ck2_localize("SM_APPLY", "Apply"), apply.x + apply.w / 2, apply.y + 6);
 
     const int hovered = row_at(settings, settings->pointer);
     if (hovered >= 0 && tabs[settings->tab].rows[hovered].option == DEFERRED)
@@ -261,6 +320,20 @@ static void apply_settings(struct settings *settings, SDL_Window *window,
         SDL_SetWindowSize(window, size.x, size.y);
     }
     menu_music_set_volume(music, draft.master, draft.music, draft.effects);
+    if (draft.language != applied.language) {
+        if (ck2_locale_reload(settings->asset_root, draft.language) < 0) {
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Language", "The selected CK2 localisation was not found", window);
+            return;
+        }
+        char *prefs = SDL_GetPrefPath("OpenCK2", "Launcher");
+        if (prefs) {
+            char filename[1024];
+            snprintf(filename, sizeof filename, "%s%s", prefs, "language.txt");
+            FILE *saved = fopen(filename, "w");
+            if (saved) {fprintf(saved, "%d\n", draft.language); fclose(saved);}
+            SDL_free(prefs);
+        }
+    }
     settings->applied = draft;
 }
 
@@ -286,6 +359,9 @@ static void adjust_row(struct settings *settings, int index, int direction)
         break;
     case WINDOW_MODE:
         settings->draft.borderless = direction > 0;
+        break;
+    case LANGUAGE:
+        settings->draft.language = (settings->draft.language + direction + CK2_LANGUAGE_COUNT) % CK2_LANGUAGE_COUNT;
         break;
     case MASTER_VOLUME:
     case MUSIC_VOLUME:

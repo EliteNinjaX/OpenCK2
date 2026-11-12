@@ -5,7 +5,7 @@
 #include "music.h"
 
 struct settings_values {
-    int resolution, borderless, master, music, effects;
+    int resolution, borderless, master, music, effects, language;
 };
 
 struct settings {
@@ -13,6 +13,7 @@ struct settings {
     SDL_Texture *sprites[5];
     SDL_Point pointer;
     int tab, focus, dragging;
+    const char *asset_root;
 };
 
 typedef void (*settings_text)(SDL_Renderer *, const struct menu_assets *,

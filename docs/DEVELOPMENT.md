@@ -17,6 +17,73 @@ This document replaces scattered progress reports, Qwen checkpoints, work plans,
 - Do not use historical progress documents as proof of runtime equivalence or of current source state. Re-run relevant Makefile targets and compare against the installed CK2 game.
 - Keep exact engine executable evidence under **EXE_RESEARCH.md**, not scattered implementation reports. Some archived reports below include context and links; the research document is the canonical executable-evidence record.
 
+## C17 gameplay increment — founded holdings and construction income (2026-11-12)
+
+**Source baseline:** `OpenCK2_Tree_Layout_C.zip` (the latest prior released source archive).
+All CK2 history and economic definition inputs remain mounted loose files, not
+hardcoded historical names or example amounts. No original `FreeCK2game.exe`
+source-code algorithms are claimed to have been recovered for this increment.
+
+### Fixed in source
+
+- `economy_snapshot_build()` now records province IDs for counties actually
+  held by the player in the selected bookmark's title history. It does **not**
+  assume the player owns every holding in their top-liege realm.
+- `economy_snapshot_refresh()` now incorporates newly constructed settlement
+  holdings **after completion** and only when their county belongs to that
+  owned-county set. Repeated refreshes do not count holdings twice, and an
+  unowned county does not contribute income. Authored base tax and building
+  upgrades are still calculated by `construction_holding_annual_tax()`.
+- `construction_settlement_count()` and `construction_settlement_info()` expose
+  read-only settlement order records to the economic subsystem without making
+  the construction module's internal structs public.
+- `construction_day()` now reports a completed project; `advance_campaign_day()`
+  refreshes direct-holding monthly tax, the 'known' flag, and the demesne size
+  immediately when a building or holding completes. The treasury still receives
+  **monthly**, not daily, income at the campaign's existing month boundary.
+- Invalid construction catalog indexes, missing required project arguments,
+  and absent requirements strings now fail safely instead of dereferencing
+  invalid input. This is defensive C code, not a recovered CK2 gameplay rule.
+
+### What remains deliberately out of scope
+
+- Ownership/liege/title changes **after** the selected bookmark and baron
+  creation mechanics. The owned-county set is a historical snapshot, not a
+  simulated feudal ownership graph.
+- Vassal tax laws, church/realm tax, modifiers, upkeep, levy income, and
+  government-specific income rules. `monthly_tax` is only known direct-holding
+  income, not the original game's complete tax calculation.
+- Save/load of newly founded holdings; current campaign construction remains
+  in memory. 3D building models and map refresh on capital changes are separate.
+- Original CK2 AI, succession, event effects, and campaign-wide ownership
+  simulation. A different future data model may benefit from C++ but was not
+  introduced into this C17 increment.
+
+### Reproduce / test
+
+```sh
+make check-economy-construction
+make check-map-core check-economy-core check-technology-console
+make -B game CFLAGS='-O2 -g -Werror'  # requires actual SDL2, SDL2_image, SDL2_mixer
+```
+
+The new SDL-free regression links the real `construction.c` and `economy.c`
+with unused SDL asset-loading functions stripped. It tests a two-day city
+founding, a two-day market building, a three-day market upgrade, tax-base
+replacement, duplicate prevention, and excluding another county's income.
+It also tests malformed construction indexes and uses `-Werror`. A separate
+AddressSanitizer + UndefinedBehaviorSanitizer invocation passed during the
+implementation session. The graphical game was **not** launched or fully built
+in this environment because SDL development libraries are unavailable;
+runtime acceptance remains necessary on Linux Mint.
+
+**Manual acceptance:** start with a known directly held county that has free
+slots; found a City and observe treasury deduction; advance days and verify
+its tax and demesne count rise only on completion; then build a taxable market
+and upgrade it, checking the monthly HUD rate changes on the finishing day.
+Switch provinces and come back to ensure the new settlement remains visible.
+Separately confirm that income from a foreign county is not added.
+
 ## Migrated source-file index
 
 The entries below were consolidated into this document, EXE_RESEARCH.md, or GAME_DATA_AND_UI.md. Original notes are identified by source path and SHA-256 in their migrated sections. `RESEARCH_BLOODLINES_GOVERNMENTS.md` was byte-identical to `OpenCK2_research_report.md`; only one copy was retained. The `research/` folder remains because it holds actual analysis scripts, instruction dumps, and machine-readable cross-references.
@@ -677,3 +744,77 @@ describes the columns, map-wide comparison, and duplicate-file fix.
 4. Verify missing atlas assets do not crash and retain fallback. Investigate genuine TGA alpha/CoA shader matching next.
 
 The underlying code remains C17 and uses the mounted CK2 asset search path; no proprietary graphics are embedded in the ZIP.
+
+
+## 2026-11-12: C17 localisation and three genealogy interfaces
+
+### Implemented
+
+- `src/game/localization_core.c/.h`: shared indexed localisation catalog. Reads CK2 `localisation/*.csv` from the game's mounted base/DLC/mod data through the existing asset resolver; supports English, French, German, Spanish with English fallback, semicolon CSV quoting, basic CK2 color-control stripping and replacement of a single `$VARIABLE$`. No CK2 data files are overwritten.
+- `src/game/ck2_script.c`: `ck2_translate()` now uses the shared catalog rather than opening/searching every CSV for each label. `ck2_localize`, `ck2_locale_reload`, and `ck2_locale_format` support new localized controls.
+- `src/game/settings.c`: Language row is interactive; changes apply on **Apply**, persist in the user's SDL preference directory and reload selected language. Settings categories, option labels with confirmed CK2 keys, and some character stat tooltips are translated. Previously cached menu/tree views are discarded on change.
+- `src/game/tree_history.c/.h`: date-aware source file parser for character-history dynasty, parentage, birth/death and name.
+- `src/game/tree_view.c/.h`: modal Dynasty Tree, Family Tree and Realm Tree, launched from character-screen shield/name and existing tree buttons, with clickable people and Escape/close navigation. Dynasty uses CK2 coat of arms, authored character history and localized house/member labels; Family uses known parents, grandparents, children and spouse; Realm uses direct vassals from title history. Graphs have a capped visible node count and do not invent unknown links.
+- `src/game/setup_toolbar.c` includes `interface/dynasty_tree.gfx` in sprite lookup. `Makefile` builds the new modules.
+
+### Tested (standalone C source tests only)
+
+`make check-localization-core check-tree-history check-dynasty-arms check-technology-console check-map-core check-economy check-governments-core check-map-positions check-settlement-styles CFLAGS='-O2 -Werror'` — passing here; new tests also ran with address and undefined-behavior sanitizers. `tests/localization-core.c` includes original CSV load, language switching and fallback; `tests/tree-history.c` covers synthetic dated history. Changed SDL-dependent sources received syntax checks with temporary SDL header stubs. **Not tested** with real SDL development headers, a full game binary, or CK2 screenshot comparison in this sandbox.
+
+### Known limitations / next priorities
+
+1. The localisation pass is **not complete**. Several custom gameplay/debug messages, tooltips and development controls still use English prose because the original game has no direct localization key for that custom behavior, or the corresponding key has not been mapped. Audit per-screen and map appropriate original CSV keys; do not falsely localize a string by assigning an unrelated CK2 key.
+2. Settings currently supports four language columns, not every CK2-translated language. Glyph rendering is based on the existing byte-oriented font atlas; accented glyphs, text length and encoding need native Linux/Windows/macOS visual checks. CK2 formatting tokens beyond section-sign colors and a single `$TOKEN$` are not fully evaluated.
+3. Genealogy windows are **functional first-pass graphs**, not an exact reproduction of CK2's branch collapsing, dynamic layout, search, filters, full dynasty prestige calculation, scroll/zoom, or random/modified genealogy data. Each tree is bounded to 28 visible nodes; historical counts may include records with incomplete birth/death metadata.
+4. Realm genealogy reflects loaded historical title relationships, not a live changing campaign-state model. The Family graph shows only known relations. Tree backgrounds are resolved from original `dynasty_tree.gui/.gfx`, but runtime visual parity is still unverified.
+5. Retest language changes when opening/closing game screens and on restarted launches. Test character with recorded family, dynasty 106 and Palaiologos, different bookmark dates, and multi-tier realm vassals. Confirm no stale localization pointers after Apply.
+
+### Suggested local validation
+
+```sh
+make -B game CFLAGS='-O2 -g -Werror'
+make check-localization-core check-tree-history check-dynasty-arms check-map-core CFLAGS='-O2 -Werror'
+```
+Open Settings > Game > Language, select French/German/Spanish, Apply, and reopen Settings; restart to verify persistence. Open a landed character: click family tree icon, realm tree icon, and dynasty shield/name; click a profile and return to the character screen. Compare CK2 tree screenshots at the same date/character and record differences.
+
+---
+
+## C-only genealogy layout increment — 12 November 2026
+
+Baseline: `OpenCK2_Localization_Trees_C.zip` (the latest project ZIP supplied in this conversation at the start of this increment). The game logic and asset formats remain C17; no C++ conversion was made.
+
+### Verified source issues corrected
+
+- `tree_view.c` previously discarded every node with a row number >= 6, silently hiding many direct vassals, children, and other relatives. Its fixed 28-node budget and non-scrollable layout also made large historical groups inaccessible.
+- The old dynasty tree rendered an arbitrary sample of same-dynasty people as a disconnected peer list; its ancestry lines did not reliably follow the recorded parent IDs. Family's loaded sibling data was not displayed, and spouse was treated like a parent edge.
+- The modal previously rendered every node directly over a non-clipped window and drew the same generic dark card regardless of the original CK2 tree-member artwork.
+
+### Implementation
+
+- Added `src/game/tree_layout_core.c/.h` (SDL-independent C layout and clamped scrolling), with `tests/tree-layout.c` and a `make check-tree-layout` target.
+- Increased the per-view bounded node budget to 64. Nodes beyond a scrollable viewport are reachable by mouse wheel / Up/Down; Shift+wheel or Left/Right scrolls horizontally; Home resets the position. This is *not* a claim that all dynasty members are loaded or simulated.
+- Rebuilt family ancestry branches from the actual loaded father/mother/grandparent IDs and included siblings; spouse now uses a separate relationship link. Dynasty branches include only recorded same-dynasty parents/grandparents, children, siblings, and grandchildren. Unrelated members are no longer displayed as though they belonged to the focused genealogy.
+- Extended realm tree to show up to 18 direct vassals and bounded second-level relationships; the `total` count may exceed the visible subset. The title data continues to come from `realm_direct_vassals()`.
+- Draws relationship connectors as orthogonal branches, clips the graph inside its window, and binds original `GFX_DynaTree_Member` / `GFX_realmtree_title_bg` if installed. A flat rectangle is retained as a missing-asset fallback. The root's border is distinguished. The original GUI background, close control, banner and dynasty shield remain in use.
+- Preserved the existing localised tree headings and status labels; no original game text was replaced with new English-only labels.
+
+### Validation
+
+- `make check-tree-layout check-tree-history check-localization-core check-map-core check-technology-console check-dynasty-arms check-economy check-ck2-map-data CFLAGS='-O2 -Wall -Wextra -Wpedantic -Werror'` passed in the build container.
+- AddressSanitizer/UndefinedBehaviorSanitizer checks passed for the standalone tree-layout and tree-history tests.
+- `tree_view.c` passed a `-std=c17 -Wall -Wextra -Wpedantic -Werror -fsyntax-only` check using a *temporary SDL stub header*. There was no full SDL game build or live visual comparison in this environment; the stub does not prove full API/link compatibility.
+
+### Manual acceptance checklist for Linux Mint
+
+- Run `make -B game CFLAGS='-O2 -g -Werror'` and `make check-tree-layout check-tree-history` from the extracted project directory.
+- In 1066/1337, open Family Tree on a character with many siblings/children. Verify the family nodes are accessible by scrolling and that parents and grandparents connect only to recorded relatives.
+- Open Realm Tree on a large ruler (e.g. a Byzantine emperor); scroll down through direct vassals past row 6 and select a lower row. Verify character navigation and Escape/close still work.
+- Open Dynasty Tree on a Palaiologos, compare the background, coat of arms, names, edges and portraits to CK2. Check language switching still affects the existing localised headings.
+- Confirm the original member-card textures are present in the mounted game data; if absent, the flat fallback should render and scrolling must still work.
+
+### Known limitations and deferred work
+
+- These are bounded *historical* graphs, not full CK2 real-time genealogy, dynasty renown/prestige calculation, blood relationships, adoptees, branch expansion, drag-to-pan, zoom, filtering, founder/head selection, or a verified 1:1 original layout algorithm.
+- Some relationships in character history are absent or inconsistent, and the original game may generate additional characters/events during play. The UI displays only the facts loaded in OpenCK2; it must not invent missing parentage.
+- Family nodes and the realm tree still use an approximate placement algorithm, although geometry and scroll behavior are now centralized and independently tested. The original executable's GUI cross-references are recorded in `docs/EXE_RESEARCH.md`; those references do **not** establish exact original branch-layout code.
+- A reusable, simulation-wide live genealogical graph and indexed historical data store may eventually merit C++ containers/ownership, but the current incremental rendering and bounded history queries are deliberately kept in C.

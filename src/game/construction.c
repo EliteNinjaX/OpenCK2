@@ -283,7 +283,7 @@ static bool completed(const struct construction *state, const char *holding, str
 static bool meets_requirements(const struct construction *state, const struct building *building,
                                const char *holding)
 {
-    if (!building->supported || !building->gold || !building->days)
+    if (!building->supported || !building->gold || !building->days || !building->requirements)
         return false;
     const char *p = building->requirements;
     for (struct token key; (key = token(&p)).size && !is(key, "}");) {
@@ -307,7 +307,9 @@ static bool meets_requirements(const struct construction *state, const struct bu
 enum building_status construction_status(const struct construction *state, const struct holding *holding,
                                          size_t index, bool owns, unsigned gold, unsigned *days)
 {
-    *days = 0;
+    if (days) *days = 0;
+    if (!state || !holding || !days || index >= state->count)
+        return BUILD_REQUIREMENTS;
     bool busy = false;
     for (size_t i = 0; i < state->project_count; ++i) {
         const struct building_project *project = &state->projects[i];
@@ -332,6 +334,7 @@ enum building_status construction_status(const struct construction *state, const
 bool construction_start(struct construction *state, const struct holding *holding, size_t index,
                         bool owns, unsigned *gold)
 {
+    if (!state || !holding || !gold) return false;
     unsigned days;
     if (index >= state->count ||
         construction_status(state, holding, index, owns, *gold, &days) != BUILD_AVAILABLE)
@@ -343,14 +346,17 @@ bool construction_start(struct construction *state, const struct holding *holdin
     return true;
 }
 
-void construction_day(struct construction *state)
+bool construction_day(struct construction *state)
 {
+    if (!state) return false;
+    bool finished = false;
     for (size_t i = 0; i < state->project_count; ++i)
-        if (state->projects[i].days)
-            --state->projects[i].days;
+        if (state->projects[i].days && !--state->projects[i].days)
+            finished = true;
     for (size_t i = 0; i < state->settlement_count; ++i)
-        if (state->settlements[i].days)
-            --state->settlements[i].days;
+        if (state->settlements[i].days && !--state->settlements[i].days)
+            finished = true;
+    return finished;
 }
 
 static void read_history(struct construction *state, const char *p, int cutoff)
@@ -410,7 +416,8 @@ unsigned construction_settlement_pending(const struct construction *state, unsig
 bool construction_settlement_quote(const struct construction *state, const struct county_holdings *county,
                                    unsigned province, enum holding_type type, unsigned *gold, unsigned *days)
 {
-    if (!state->settlement_rules_ready || type < HOLDING_CASTLE || type > HOLDING_TEMPLE ||
+    if (!state || !county || !gold || !days ||
+        !state->settlement_rules_ready || type < HOLDING_CASTLE || type > HOLDING_TEMPLE ||
         !state->settlement_type_allowed[type] || !state->settlement_gold[type] ||
         !state->settlement_days[type] || !county->count ||
         county->count >= county->capacity || county->count >= HOLDING_LIMIT ||
@@ -434,6 +441,7 @@ bool construction_settlement_quote(const struct construction *state, const struc
 bool construction_settlement_start(struct construction *state, const struct county_holdings *county,
                                    unsigned province, const struct holding *holding, unsigned *gold)
 {
+    if (!state || !county || !holding || !gold) return false;
     unsigned price, days;
     if (!holding->id[0] || !construction_settlement_quote(state, county, province, holding->type,
                                                          &price, &days) || *gold < price)
@@ -457,6 +465,7 @@ bool construction_settlement_start(struct construction *state, const struct coun
 
 void construction_settlement_apply(const struct construction *state, unsigned province, struct county_holdings *county)
 {
+    if (!state || !county) return;
     for (size_t i = 0; i < state->settlement_count && county->count < county->capacity; ++i) {
         const struct settlement_project *project = &state->settlements[i];
         if (project->province != province || project->days)
@@ -469,8 +478,26 @@ void construction_settlement_apply(const struct construction *state, unsigned pr
     }
 }
 
+size_t construction_settlement_count(const struct construction *state)
+{
+    return state ? state->settlement_count : 0;
+}
+
+bool construction_settlement_info(const struct construction *state, size_t index,
+                                  unsigned *province, const struct holding **holding,
+                                  bool *complete)
+{
+    if (!state || index >= state->settlement_count) return false;
+    const struct settlement_project *project = &state->settlements[index];
+    if (province) *province = project->province;
+    if (holding) *holding = &project->holding;
+    if (complete) *complete = project->days == 0;
+    return true;
+}
+
 bool construction_owns_settlement(const struct construction *state, const char *holding)
 {
+    if (!state || !holding) return false;
     for (size_t i = 0; i < state->settlement_count; ++i)
         if (!state->settlements[i].days && !strcmp(state->settlements[i].holding.id, holding))
             return true;

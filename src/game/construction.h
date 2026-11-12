@@ -35,7 +35,9 @@ enum building_status { BUILD_AVAILABLE, BUILD_COMPLETE, BUILD_RUNNING, BUILD_BUS
 int construction_load(struct construction *, const char *root);
 void construction_reset(struct construction *);
 void construction_free(struct construction *);
-void construction_day(struct construction *);
+/* Advances all active projects one day. Returns true exactly when a
+ * building or settlement finishes, so economy/HUD caches can refresh now. */
+bool construction_day(struct construction *);
 enum building_status construction_status(const struct construction *, const struct holding *,
                                          size_t index, bool owns, unsigned gold, unsigned *days);
 bool construction_start(struct construction *, const struct holding *, size_t index,
@@ -49,6 +51,13 @@ bool construction_settlement_start(struct construction *, const struct county_ho
 unsigned construction_settlement_pending(const struct construction *, unsigned province, const struct holding **);
 void construction_settlement_apply(const struct construction *, unsigned province, struct county_holdings *);
 bool construction_owns_settlement(const struct construction *, const char *holding);
+/* Safe read-only iteration over settlement orders. The project owns the
+ * holding pointer; callers must not retain it past any state mutation.
+ * Completed orders are permanent for the current campaign. */
+size_t construction_settlement_count(const struct construction *);
+bool construction_settlement_info(const struct construction *, size_t index,
+                                  unsigned *province, const struct holding **holding,
+                                  bool *complete);
 /* Annual tax from one holding, using only verified historical/completed
  * building IDs, with upgrades replacing earlier levels. Returns false if
  * the installed static base tax for this holding type was unavailable. */

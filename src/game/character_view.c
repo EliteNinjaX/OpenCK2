@@ -47,8 +47,8 @@ int character_view_load(struct character_view *view, SDL_Renderer *renderer, con
     /* These controls exist in the original GUI but were never bound by OpenCK2.
        They remain visible even where their click actions are not implemented. */
     static const struct { const char *name; const char *label; int parent; } extras[] = {
-        {"button_familytree", "Family tree (not implemented)", 0},
-        {"button_realmtree", "Realm tree (not implemented)", 0},
+        {"button_familytree", "FAMILYTREE_INTERFACE_LABEL", 0},
+        {"button_realmtree", "REALM_TREE_INTERFACE_LABEL", 0},
         {"button_treasury", "Treasury (not implemented)", 0},
         {"button_bloodlines", "Bloodlines (not implemented)", 0},
         {"kill_list", "Kill list (not implemented)", 0},
@@ -71,7 +71,9 @@ int character_view_load(struct character_view *view, SDL_Renderer *renderer, con
             SDL_Rect area;
             if (frontend_gui_rect(&gui, node, viewport, &area) &&
                 setup_widget_load_node(&view->extra_icons[i], renderer, root, &gui, node, area) == 0)
-                SDL_strlcpy(view->extra_icon_labels[i], extras[i].label, sizeof view->extra_icon_labels[i]);
+                SDL_strlcpy(view->extra_icon_labels[i],
+                            i < 2 ? ck2_localize(extras[i].label, i ? "Realm Tree" : "Family Tree") : extras[i].label,
+                            sizeof view->extra_icon_labels[i]);
             else
                 SDL_ClearError(); /* Optional assets must not block the character screen. */
         }
@@ -634,7 +636,12 @@ void character_view_draw(const struct character_view *view, SDL_Renderer *render
         }
         SDL_RenderSetClipRect(renderer, NULL);
     }
-    static const char *const stat_names[] = {"Diplomacy", "Martial", "Stewardship", "Intrigue", "Learning"};
+    static const char *const stat_keys[] = {
+        "DIPLOMACY_MOD", "MARTIAL_MOD", "STEWARDSHIP_MOD", "INTRIGUE_MOD", "LEARNING_MOD"
+    };
+    static const char *const stat_fallbacks[] = {
+        "Diplomacy", "Martial", "Stewardship", "Intrigue", "Learning"
+    };
     const char *hover = NULL;
     const char *help = NULL;
     char stat_hint[128], stat_detail[4096], claim_hint[120], relation_hint[128], relation_name[240];
@@ -652,7 +659,7 @@ void character_view_draw(const struct character_view *view, SDL_Renderer *render
         draw_frame(&view->stat_icons[i], renderer, 0);
         text(renderer, assets, number, strlen(number), value.x + value.w / 2, value.y);
         if (SDL_PointInRect(&pointer, &view->stat_icons[i].area) || SDL_PointInRect(&pointer, &value)) {
-            snprintf(stat_hint, sizeof stat_hint, "%s: %s", stat_names[i], number);
+            snprintf(stat_hint, sizeof stat_hint, "%s: %s", ck2_localize(stat_keys[i], stat_fallbacks[i]), number);
             if (known)
                 snprintf(stat_detail, sizeof stat_detail, "Base: %d", view->ruler.stats[i]);
             else
@@ -673,11 +680,7 @@ void character_view_draw(const struct character_view *view, SDL_Renderer *render
         view->dynasty_shield_area.w > 0 ? view->dynasty_shield_area.w : 55,
         view->dynasty_shield_area.h > 0 ? view->dynasty_shield_area.h : 62})) {
         hover = view->ruler.dynasty;
-        help = view->dynasty_arms_proxy
-            ? "Dynasty texture unavailable: displaying a title-flag fallback"
-            : view->dynasty_arms_approximate
-              ? "Generated dynasty arms (deterministic OpenCK2 fallback; CK2 RNG unverified)"
-              : "Dynasty coat of arms from the original CK2 dynasty and CoA definitions";
+        help = ck2_localize("DYNASTY_DRO", "This is the dynasty of this character.");
     }
     if (view->ruler.religion[0] && SDL_PointInRect(&pointer, &view->religion.area))
         hover = view->ruler.religion;

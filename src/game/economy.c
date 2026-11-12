@@ -1,6 +1,7 @@
 #include "economy.h"
 #include "ck2_script.h"
 #include <math.h>
+#include <stdint.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +18,37 @@ static bool append_holding(struct economy_snapshot *economy, const struct holdin
     }
     economy->direct_holdings[economy->direct_count++] = *holding;
     return true;
+}
+
+bool economy_snapshot_track_county(struct economy_snapshot *economy, unsigned province_id)
+{
+    if (!economy || !province_id) return false;
+    for (size_t i = 0; i < economy->direct_county_count; ++i)
+        if (economy->direct_counties[i] == province_id) return true;
+    if (economy->direct_county_count == economy->direct_county_capacity) {
+        const size_t cap = economy->direct_county_capacity ? economy->direct_county_capacity * 2 : 16;
+        if (cap <= economy->direct_county_capacity || cap > SIZE_MAX / sizeof(unsigned)) return false;
+        unsigned *next = realloc(economy->direct_counties, cap * sizeof(*next));
+        if (!next) return false;
+        economy->direct_counties = next;
+        economy->direct_county_capacity = cap;
+    }
+    economy->direct_counties[economy->direct_county_count++] = province_id;
+    return true;
+}
+
+static bool direct_county(const struct economy_snapshot *economy, unsigned id)
+{
+    for (size_t i = 0; i < economy->direct_county_count; ++i)
+        if (economy->direct_counties[i] == id) return true;
+    return false;
+}
+
+static bool known_direct_holding(const struct economy_snapshot *economy, const char *id)
+{
+    for (size_t i = 0; i < economy->direct_count; ++i)
+        if (!strcmp(economy->direct_holdings[i].id, id)) return true;
+    return false;
 }
 
 static unsigned title_rank(const char *id)
@@ -103,6 +135,13 @@ int economy_snapshot_build(struct economy_snapshot *economy, const char *root,
         if (!county.count) continue;
         struct realm_title_info county_title;
         const bool has_county = realm_county_info(realms, p, false, &county_title);
+        /* Retain only title-history verified ownership. The owner of a new
+         * settlement is known because constructing it required this county. */
+        if (player && has_county && county_title.holder == player &&
+            !economy_snapshot_track_county(economy, province->id)) {
+            economy_snapshot_free(economy);
+            return -1;
+        }
         for (size_t h = 0; h < county.count; ++h) {
             const struct holding *holding = &county.slots[h];
             struct realm_title_info barony;
@@ -129,6 +168,22 @@ int economy_snapshot_build(struct economy_snapshot *economy, const char *root,
 void economy_snapshot_refresh(struct economy_snapshot *economy, const struct construction *state)
 {
     if (!economy || !state) return;
+    /* The static bookmark holdings were loaded once; a finished newly
+     * founded settlement is not in that history. Add it once, never while
+     * its construction is pending. Repeated monthly refreshes are safe. */
+    const size_t count = construction_settlement_count(state);
+    for (size_t i = 0; i < count; ++i) {
+        unsigned province = 0;
+        const struct holding *holding = NULL;
+        bool complete = false;
+        if (!construction_settlement_info(state, i, &province, &holding, &complete) ||
+            !complete || !holding || !direct_county(economy, province) ||
+            known_direct_holding(economy, holding->id)) continue;
+        if (!append_holding(economy, holding)) {
+            /* The snapshot remains consistent and can be retried next tick. */
+            break;
+        }
+    }
     economy->annual_direct_tax = 0;
     economy->missing_tax_definitions = 0;
     for (size_t i = 0; i < economy->direct_count; ++i) {
@@ -144,5 +199,6 @@ void economy_snapshot_free(struct economy_snapshot *economy)
 {
     if (!economy) return;
     free(economy->direct_holdings);
+    free(economy->direct_counties);
     *economy = (struct economy_snapshot){0};
 }

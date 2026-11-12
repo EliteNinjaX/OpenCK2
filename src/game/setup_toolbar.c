@@ -33,6 +33,7 @@ static const char *const gfx_files[] = {
     "interface/main.gfx", "interface/frontend.gfx", "interface/alternate_start.gfx",
     "interface/generalstuff.gfx", "interface/domestic_dynastic.gfx", "interface/wonder.gfx",
     "interface/domestic_societies.gfx", "interface/province.gfx", "interface/alerts.gfx",
+    "interface/dynasty_tree.gfx",
 };
 
 static bool integer(struct token t, int *result)

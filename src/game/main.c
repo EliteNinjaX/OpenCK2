@@ -13,6 +13,8 @@
 #include "realms.h"
 #include "holdings.h"
 #include "character_view.h"
+#include "tree_view.h"
+#include "ck2_script.h"
 #include "construction.h"
 #include "map_view.h"
 #include "map_interaction.h"
@@ -160,6 +162,7 @@ struct menu {
     char setup_title[72];
     const struct menu_assets *assets;
     struct character_view character;
+    struct tree_view genealogy;
     struct wonder_panel wonder;
     struct setup_widget topbar[14];
     SDL_Rect topbar_values[8];
@@ -1215,11 +1218,14 @@ static bool building_click(struct menu *menu, SDL_Point point)
 
 static void advance_campaign_day(struct menu *menu)
 {
-    construction_day(&menu->construction);
-    /* Completed building projects affect the next monthly tax receipt. */
-    if (menu->campaign.date.day >= 28) {
+    const bool just_completed = construction_day(&menu->construction);
+    /* Recalculate immediately when construction finishes, not only near
+     * month end; the monthly receipt still happens at the month boundary. */
+    if (just_completed || menu->campaign.date.day >= 28) {
         economy_snapshot_refresh(&menu->economy, &menu->construction);
         menu->campaign.monthly_tax = ck2_tax_monthly(menu->economy.annual_direct_tax);
+        menu->campaign.monthly_tax_known = menu->economy.missing_tax_definitions == 0;
+        menu->campaign.demesne_count = menu->economy.direct_count;
     }
     campaign_advance_day(&menu->campaign);
     if (menu->selected)
@@ -1654,7 +1660,7 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
 
     char line[160];
     draw_campaign_topbar(renderer, assets, menu);
-    campaign_text(renderer, assets, "Outliner", 1420, 220);
+    campaign_text(renderer, assets, ck2_localize("OUTLINER", "Outliner"), 1420, 220);
 
     campaign_hud_ui_draw_background(&menu->hud_ui, renderer);
     if (menu->character.open) {
@@ -1668,11 +1674,11 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
         campaign_text(renderer, assets, owns_selection ? "Your county" : "Outside your county", 99, 349);
         snprintf(line, sizeof line, "+%.2f gold/month (direct)", campaign_monthly_income(&menu->campaign));
         campaign_text(renderer, assets, line, 99, 379);
-        snprintf(line, sizeof line, "Culture: %s", menu->holdings.culture_name[0] ?
-                 menu->holdings.culture_name : "Not in history");
+        snprintf(line, sizeof line, "%s: %s", ck2_localize("CULTURE", "Culture"),
+                 menu->holdings.culture_name[0] ? menu->holdings.culture_name : "Not in history");
         campaign_text(renderer, assets, line, 147, 407);
-        snprintf(line, sizeof line, "Religion: %s", menu->holdings.religion_name[0] ?
-                 menu->holdings.religion_name : "Not in history");
+        snprintf(line, sizeof line, "%s: %s", ck2_localize("RELIGION", "Religion"),
+                 menu->holdings.religion_name[0] ? menu->holdings.religion_name : "Not in history");
         campaign_text(renderer, assets, line, 147, 431);
         snprintf(line, sizeof line, "Holdings: %zu / %zu", menu->holdings.count, menu->holdings.capacity);
         SDL_SetTextureColorMod(assets->font, 36, 26, 16);
@@ -2448,6 +2454,25 @@ static bool campaign_character_click(struct menu *menu, SDL_Point point)
         view->open = false;
         return true;
     }
+    enum tree_mode requested = TREE_FAMILY;
+    bool open_tree = false;
+    if (view->extra_icons[0].texture && SDL_PointInRect(&point, &view->extra_icons[0].area)) {
+        requested = TREE_FAMILY; open_tree = true;
+    } else if (view->extra_icons[1].texture && SDL_PointInRect(&point, &view->extra_icons[1].area)) {
+        requested = TREE_REALM; open_tree = true;
+    } else if (view->dynasty_arms &&
+               SDL_PointInRect(&point, &view->dynasty_shield_area)) {
+        requested = TREE_DYNASTY; open_tree = true;
+    } else if (SDL_PointInRect(&point, &view->labels[2])) {
+        requested = TREE_DYNASTY; open_tree = true;
+    }
+    if (open_tree) {
+        if (tree_view_open(&menu->genealogy, requested, menu->renderer,
+                           menu->asset_root, view, &menu->realms, menu->start_date,
+                           character_relative_portrait, menu) < 0)
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Could not open genealogy view: %s", SDL_GetError());
+        return true;
+    }
     unsigned selected_id;
     const struct ruler_profile *selected = character_view_pick(view, point, &selected_id);
     if (selected || selected_id) {
@@ -2721,6 +2746,7 @@ static void draw(SDL_Renderer *renderer,
     }
     if (menu->screen == CAMPAIGN) {
         technology_view_draw(&menu->technology, renderer, assets, menu->pointer, centered_text);
+        tree_view_draw(&menu->genealogy, renderer, assets, centered_text);
         draw_debug_console(renderer, assets, &menu->console);
     }
     SDL_RenderPresent(renderer);
@@ -3102,8 +3128,16 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
             SDL_SetCursor(SDL_GetDefaultCursor());
     }
     if (menu->screen == OPTIONS && event->type != SDL_QUIT) {
+        const int previous_language = menu->settings.applied.language;
         if (settings_event(&menu->settings, window, &menu->music, event))
             activate(menu, window, BACK);
+        if (previous_language != menu->settings.applied.language) {
+            /* Menu labels and character view text are cached at screen load. */
+            era_menu_free(&menu->era);
+            character_view_free(&menu->character);
+            tree_view_close(&menu->genealogy);
+            menu->character = (struct character_view){0};
+        }
         return;
     }
 
@@ -3113,6 +3147,7 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
         menu->console.open = !menu->console.open;
         map_gesture_cancel(&menu->map_gesture);
         if (menu->console.open) {
+            tree_view_close(&menu->genealogy);
             menu->technology.open = false;
             SDL_StartTextInput();
         } else SDL_StopTextInput();
@@ -3143,6 +3178,41 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
             default: break;
             }
         }
+        return;
+    }
+    if (menu->screen == CAMPAIGN && menu->genealogy.open && event->type != SDL_QUIT) {
+        if (event->type == SDL_KEYDOWN && !event->key.repeat) {
+            switch (event->key.keysym.sym) {
+            case SDLK_ESCAPE: tree_view_close(&menu->genealogy); break;
+            case SDLK_UP: tree_view_scroll(&menu->genealogy, 0, -90); break;
+            case SDLK_DOWN: tree_view_scroll(&menu->genealogy, 0, 90); break;
+            case SDLK_LEFT: tree_view_scroll(&menu->genealogy, -90, 0); break;
+            case SDLK_RIGHT: tree_view_scroll(&menu->genealogy, 90, 0); break;
+            case SDLK_HOME: tree_view_scroll(&menu->genealogy,
+                                -menu->genealogy.scroll_x, -menu->genealogy.scroll_y); break;
+            default: break;
+            }
+        } else if (event->type == SDL_MOUSEWHEEL) {
+            const int sign = event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1 : 1;
+            if (SDL_GetModState() & KMOD_SHIFT)
+                tree_view_scroll(&menu->genealogy, -event->wheel.y * sign * 66, 0);
+            else
+                tree_view_scroll(&menu->genealogy, -event->wheel.x * sign * 66,
+                                 -event->wheel.y * sign * 66);
+        }
+        else if (event->type == SDL_MOUSEBUTTONUP && event->button.button == SDL_BUTTON_LEFT) {
+            const unsigned chosen = tree_view_click(&menu->genealogy,
+                                                     (SDL_Point){event->button.x,event->button.y});
+            if (chosen == UINT_MAX) tree_view_close(&menu->genealogy);
+            else if (chosen) {
+                struct ruler_profile person = {.id = chosen};
+                const struct ruler_profile *known = realm_ruler(&menu->realms, chosen);
+                if (!known) rulers_load(&person, 1, menu->asset_root, menu->start_date);
+                tree_view_close(&menu->genealogy);
+                inspect_campaign_character(menu, known ? known : &person);
+            }
+        } else if (event->type == SDL_MOUSEMOTION)
+            menu->pointer = (SDL_Point){event->motion.x,event->motion.y};
         return;
     }
     if (menu->screen == CAMPAIGN && menu->technology.open && event->type != SDL_QUIT) {
@@ -3445,9 +3515,9 @@ static int run_game(const char *root)
     refresh_content(&menu);
     ck2_mount_content(root, &menu.catalog);
     if (!renderer || SDL_RenderSetLogicalSize(renderer, WIDTH, HEIGHT) < 0 ||
+        settings_load(&menu.settings, renderer, root) < 0 ||
         menu_assets_load(&assets, renderer, root) < 0 ||
         load_main_button_layout(&menu, &assets) < 0 ||
-        settings_load(&menu.settings, renderer, root) < 0 ||
         map_view_build(&menu.menu_map, renderer, root, WIDTH, HEIGHT, false) < 0) {
         fprintf(stderr, "Could not load the CK2 main menu: %s\n", SDL_GetError());
         goto cleanup;
@@ -3520,6 +3590,7 @@ cleanup:
     setup_toolbar_free(&menu.toolbar);
     campaign_hud_ui_free(&menu.hud_ui);
     technology_view_free(&menu.technology);
+    tree_view_close(&menu.genealogy);
     SDL_StopTextInput();
     settings_free(&menu.settings);
     construction_free(&menu.construction);
@@ -3543,6 +3614,7 @@ cleanup:
     if (renderer)
         SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
+    ck2_locale_free();
     ck2_unmount_content();
     return status;
 }
