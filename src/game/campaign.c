@@ -1,7 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "../open_launcher/asset_paths.h"
 #include "campaign.h"
-#include "holdings.h"
 #include "../open_launcher/install.h"
 
 #include <limits.h>
@@ -14,20 +13,19 @@ void campaign_start(struct campaign *campaign)
     *campaign = (struct campaign){.date = {1066, 9, 15}, .treasury = 50};
 }
 
-unsigned campaign_monthly_income(const struct campaign *campaign,
-                                 const struct county_holdings *holdings)
+unsigned campaign_monthly_income(const struct campaign *campaign)
 {
-    /* Sum income from active county holdings without modifying them. */
+    /* Sum income from active county holdings */
+    const struct county_holdings *holdings = &campaign->holdings;
     unsigned total = 0;
-    for (size_t i = 0; holdings && i < holdings->count; ++i) {
+    for (size_t i = 0; i < holdings->count; ++i) {
         const struct holding *h = &holdings->slots[i];
-        if (h->type == HOLDING_EMPTY)
-            continue;
-        /* Income by holding type: Castle=5, City=8, Temple=11, Tribal=14, Nomad=17 */
-        total += 5 + (unsigned)(h->type - HOLDING_CASTLE) * 3;
+        if (h->type && h->income == 0)
+            h->income = 5 + (int)(h->type - 1) * 3; /* Castle=8, City=11, Temple=6 */
+        total += h->income;
     }
-    /* Base income fallback for setups without holdings */
-    if (total == 0)
+    /* Base income fallback for pre-existing setups without holdings */
+    if (total == 0 || campaign->holdings.count == 0)
         return 5 + 2 * campaign->improvements;
     return total;
 }
@@ -39,18 +37,7 @@ static int days_in_month(struct campaign_date date)
     return days[date.month - 1] + (date.month == 2 && leap);
 }
 
-bool campaign_set_date(struct campaign *campaign, int year, int month, int day)
-{
-    if (year < 1 || year > 9999 || month < 1 || month > 12 || day < 1)
-        return false;
-    const struct campaign_date date = {year, month, day};
-    if (day > days_in_month(date))
-        return false;
-    campaign->date = date;
-    return true;
-}
-
-void campaign_advance_day(struct campaign *campaign, const struct county_holdings *holdings)
+void campaign_advance_day(struct campaign *campaign)
 {
     struct campaign_date *date = &campaign->date;
     if (date->day < days_in_month(*date)) {
@@ -66,17 +53,17 @@ void campaign_advance_day(struct campaign *campaign, const struct county_holding
         ++date->month;
     }
     /* Income collection */
-    const unsigned income = campaign_monthly_income(campaign, holdings);
+    const unsigned income = campaign_monthly_income(campaign);
     if (campaign->treasury <= UINT_MAX - income)
         campaign->treasury += income;
     else
         campaign->treasury = UINT_MAX;
 }
 
-void campaign_advance_month(struct campaign *campaign, const struct county_holdings *holdings)
+void campaign_advance_month(struct campaign *campaign)
 {
     do {
-        campaign_advance_day(campaign, holdings);
+        campaign_advance_day(campaign);
     } while (campaign->date.day != 1);
 }
 
