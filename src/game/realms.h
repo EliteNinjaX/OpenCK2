@@ -6,6 +6,7 @@
 #include "rulers.h"
 
 struct realm_history;
+struct county_holdings;
 struct realm_title_info {
     char id[72], name[96], liege[72];
     unsigned holder, capital;
@@ -32,6 +33,8 @@ int realm_map_build(struct realm_map *, SDL_Renderer *, const char *, const stru
                     const struct map_view *, struct campaign_date);
 bool realm_title_info(const struct realm_map *, const char *, struct realm_title_info *);
 bool realm_primary_title(const struct realm_map *, unsigned holder, struct realm_title_info *);
+bool realm_vacant_barony(const struct realm_map *, const char *county,
+                        const struct county_holdings *, struct realm_title_info *);
 bool realm_county_info(const struct realm_map *, size_t, bool independent, struct realm_title_info *);
 size_t realm_vassal_titles(const struct realm_map *, const struct realm_title_info *, size_t,
                            struct realm_title_info *, size_t);

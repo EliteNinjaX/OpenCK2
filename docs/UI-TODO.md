@@ -42,3 +42,8 @@ tab and setup holdings panel were absent. Starting the campaign showed
 the selected province's capital and settlement slots in the province
 panel. The setup layout test loaded the installed assets and the
 launcher, campaign and holdings regressions passed with `-Werror`.
+
+## Campaign construction
+
+- Finish the vanilla building list statistics, level indicators, scroll controls, and tooltips.
+- Compare the Create Holding dialog and refine title selection, price modifiers, duration, and eligibility against vanilla. See [construction evidence](reverse-engineering/CONSTRUCTION.md).

@@ -12,6 +12,7 @@
 #include "rules.h"
 #include "realms.h"
 #include "holdings.h"
+#include "construction.h"
 #include "map_view.h"
 
 #include <SDL_image.h>
@@ -29,7 +30,7 @@ enum screen { MAIN_MENU, SINGLE_PLAYER, STARTING_ERA, MAP_SETUP, GAME_RULES, OPT
 enum action { UNAVAILABLE, OPEN_OPTIONS, OPEN_CREDITS, QUIT, MULTIPLAYER,
               BACK, CONTENT_SETTINGS, PARADOX_LINK, PDF_LINK, REDDIT_LINK, GITHUB_LINK,
               OPEN_SINGLE_PLAYER, NEW_GAME, CONTINUE_GAME, LOAD_GAME, TUTORIAL,
-              START_ERA, CUSTOM_SETUP, LAUNCH_CAMPAIGN, TOGGLE_REALMS, TOGGLE_TIME, NEXT_MONTH, IMPROVE_HOLDING, SELECT_HOME };
+              START_ERA, CUSTOM_SETUP, LAUNCH_CAMPAIGN, TOGGLE_REALMS, TOGGLE_TIME, NEXT_MONTH, SELECT_HOME };
 
 extern char **environ;
 
@@ -84,7 +85,6 @@ static const struct button credits_buttons[] = {
 static const struct button campaign_buttons[] = {
     {{1331, 40, 216, 24}, NULL, TOGGLE_TIME},
     {{1350, 247, 224, 30}, "Capital", SELECT_HOME},
-    {{356, 768, 232, 40}, "Improve Holding", IMPROVE_HOLDING},
     {{356, 816, 232, 40}, "Next Month", NEXT_MONTH},
     {{1352, 816, 180, 30}, "Realms / Terrain", TOGGLE_REALMS},
     {{1360, 856, 164, 30}, "Main Menu", BACK},
@@ -129,7 +129,19 @@ struct menu {
     const struct era_ruler *campaign_ruler;
     unsigned home_province, setup_province, campaign_ruler_id;
     char setup_title[72];
+    const struct menu_assets *assets;
     struct county_holdings holdings;
+    struct construction construction;
+    SDL_Texture *building_bg, *building_row, *building_close, *settlement_bg;
+    SDL_Texture *settlement_build, *settlement_hover;
+    char settlement_headline[64], settlement_build_label[32], settlement_types[3][32];
+    SDL_Rect settlement_panel, settlement_title, settlement_list, settlement_close;
+    SDL_Rect settlement_art, settlement_name, settlement_time, settlement_cost, settlement_button;
+    int settlement_row_height;
+    SDL_Rect building_panel, building_list, building_title, building_close_area, building_art_area;
+    int building_row_height, holding_columns;
+    size_t building_slot, building_scroll;
+    bool building_open;
     size_t vassal_scroll;
     int bookmark_scroll, featured_scroll;
     int bookmark_drag_offset;
@@ -279,10 +291,6 @@ static bool action_unimplemented(enum action action)
 
 static bool action_enabled(const struct menu *menu, enum action action)
 {
-    if (action == IMPROVE_HOLDING)
-        return menu->selected && menu->selected->id == menu->home_province &&
-            menu->campaign.treasury >= IMPROVEMENT_COST &&
-            menu->campaign.improvements < IMPROVEMENT_LIMIT;
     if (action == START_ERA || action == CUSTOM_SETUP)
         return era_menu_can_start(&menu->era);
     if (action == CONTINUE_GAME)
@@ -408,7 +416,7 @@ static void draw_single_player(SDL_Renderer *renderer, const struct menu_assets 
     }
 }
 
-static int load_holding_layout(struct menu *menu)
+static int load_holding_layout(struct menu *menu, SDL_Texture *background)
 {
     struct frontend_gui gui = {0};
     if (frontend_gui_load_file(&gui, menu->asset_root, "interface/province.gui") < 0)
@@ -442,6 +450,11 @@ static int load_holding_layout(struct menu *menu)
     frontend_gui_free(&gui);
     if (!valid)
         return SDL_SetError("interface/province.gui: missing campaign holding layout");
+    int panel_width = 0;
+    SDL_QueryTexture(background, NULL, NULL, &panel_width, NULL);
+    const int slot_width = menu->holding_templates[1].w;
+    menu->holding_columns = SDL_max(1, SDL_min(menu->holding_rows[0].w / slot_width,
+        (panel_width - (menu->holding_rows[0].x - menu->holding_panel.x)) / slot_width));
     menu->holding_layout_ready = true;
     return 0;
 }
@@ -453,28 +466,31 @@ static SDL_Rect place_holding_texture(SDL_Texture *texture, SDL_Rect origin, SDL
     return (SDL_Rect){origin.x + offset.x, origin.y + offset.y, (int)(w * scale), (int)(h * scale)};
 }
 
+static bool holding_origin(const struct menu *menu, size_t index, SDL_Rect *origin)
+{
+    if (!index) {
+        *origin = menu->holding_panel;
+        origin->x += menu->holding_capital.x;
+        origin->y += menu->holding_capital.y;
+        return true;
+    }
+    const size_t columns = (size_t)menu->holding_columns;
+    const size_t row = (index - 1) / columns;
+    if (row >= SDL_arraysize(menu->holding_rows))
+        return false;
+    *origin = menu->holding_rows[row];
+    origin->x += (int)((index - 1) % columns) * menu->holding_templates[1].w;
+    return true;
+}
+
 static void draw_campaign_holdings(SDL_Renderer *renderer, const struct menu_assets *assets,
                                    const struct menu *menu)
 {
     const struct county_holdings *county = &menu->holdings;
-    const int columns = SDL_max(1, menu->holding_rows[0].w / menu->holding_templates[1].w);
-    int panel_width = 0;
-    SDL_QueryTexture(assets->hud_province, NULL, NULL, &panel_width, NULL);
-    const int visible_columns = SDL_max(1, SDL_min(columns,
-        (panel_width - (menu->holding_rows[0].x - menu->holding_panel.x)) / menu->holding_templates[1].w));
     for (size_t i = 0; i < county->capacity; ++i) {
-        const int row = i ? (int)(i - 1) / visible_columns : 0;
-        if (i && row >= 2)
+        SDL_Rect origin;
+        if (!holding_origin(menu, i, &origin))
             break;
-        SDL_Rect origin = menu->holding_panel;
-        if (!i) {
-            origin.x += menu->holding_capital.x;
-            origin.y += menu->holding_capital.y;
-        } else {
-            origin = menu->holding_rows[row];
-            origin.x += (int)((i - 1) % (size_t)visible_columns) *
-                        menu->holding_templates[1].w;
-        }
         const int template = i ? 1 : 0;
         SDL_Texture *frame = i ? assets->holding_frame : assets->holding_capital;
         const struct holding *slot = i < county->count ? &county->slots[i] : NULL;
@@ -487,6 +503,370 @@ static void draw_campaign_holdings(SDL_Renderer *renderer, const struct menu_ass
             campaign_text(renderer, assets, slot ? (*slot->name ? slot->name : slot->id) : "Empty holding slot",
                           menu->holding_panel.x + 174, menu->holding_rows[0].y - 26);
     }
+}
+
+static void setup_label(SDL_Renderer *, const struct menu_assets *, const char *, SDL_Rect, int);
+
+static bool load_settlement_layout(struct menu *menu, const struct frontend_gui *gui, SDL_Point viewport)
+{
+    const int panel = frontend_gui_find(gui, -1, "build_settlement_view");
+    const int entry = frontend_gui_find(gui, -1, "build_settlement_entry");
+    const struct { int parent; const char *name; SDL_Rect *area; } items[] = {
+        {panel, "headline", &menu->settlement_title},
+        {panel, "settlement_list", &menu->settlement_list},
+        {panel, "button_close", &menu->settlement_close},
+        {entry, "settlement_type", &menu->settlement_art},
+        {entry, "name", &menu->settlement_name},
+        {entry, "buildtime", &menu->settlement_time},
+        {entry, "cost", &menu->settlement_cost},
+        {entry, "build_banner", &menu->settlement_button},
+    };
+    SDL_Rect row;
+    if (!frontend_gui_rect(gui, panel, viewport, &menu->settlement_panel) ||
+        !frontend_gui_rect(gui, entry, viewport, &row) || row.h <= 0)
+        return false;
+    for (size_t i = 0; i < SDL_arraysize(items); ++i) {
+        if (!frontend_gui_rect(gui, frontend_gui_find(gui, items[i].parent, items[i].name),
+                               viewport, items[i].area))
+            return false;
+    }
+    menu->settlement_row_height = row.h;
+    return true;
+}
+
+static int load_building_layout(struct menu *menu)
+{
+    struct frontend_gui gui = {0};
+    if (frontend_gui_load_file(&gui, menu->asset_root, "interface/buildview.gui") < 0)
+        return -1;
+    const SDL_Point viewport = {WIDTH, HEIGHT};
+    const int panel = frontend_gui_find(&gui, -1, "build_buildings_view");
+    const int entry = frontend_gui_find(&gui, -1, "build_building_entry");
+    const int art = frontend_gui_find(&gui, panel, "settlement_icon");
+    SDL_Rect row;
+    const bool valid = frontend_gui_rect(&gui, panel, viewport, &menu->building_panel) &&
+        frontend_gui_rect(&gui, frontend_gui_find(&gui, panel, "building_list"), viewport, &menu->building_list) &&
+        frontend_gui_rect(&gui, frontend_gui_find(&gui, panel, "title_label"), viewport, &menu->building_title) &&
+        frontend_gui_rect(&gui, frontend_gui_find(&gui, panel, "cancel_button"), viewport, &menu->building_close_area) &&
+        frontend_gui_rect(&gui, art, viewport, &menu->building_art_area) &&
+        frontend_gui_rect(&gui, entry, viewport, &row) && row.h > 0 && menu->building_list.h >= row.h;
+    const bool settlement_ready = load_settlement_layout(menu, &gui, viewport);
+    frontend_gui_free(&gui);
+    if (!valid)
+        return SDL_SetError("interface/buildview.gui: missing construction layout");
+    menu->building_row_height = row.h;
+    SDL_Texture *background = ck2_load_texture(menu->renderer, menu->asset_root,
+                                              "gfx/interface/buildview_bg.dds");
+    SDL_Texture *item = ck2_load_texture(menu->renderer, menu->asset_root,
+                                        "gfx/interface/buildview_listitem.dds");
+    SDL_Texture *close = ck2_load_texture(menu->renderer, menu->asset_root,
+                                         "gfx/interface/main_close_button.dds");
+    if (!background || !item || !close) {
+        SDL_DestroyTexture(background);
+        SDL_DestroyTexture(item);
+        SDL_DestroyTexture(close);
+        return SDL_SetError("Missing construction window sprites");
+    }
+    menu->building_bg = background;
+    menu->building_row = item;
+    menu->building_close = close;
+    if (settlement_ready)
+        menu->settlement_bg = ck2_load_texture(menu->renderer, menu->asset_root,
+                                              "gfx/interface/build_settlement_bg.dds");
+    if (menu->settlement_bg) {
+        SDL_QueryTexture(menu->settlement_bg, NULL, NULL, &menu->settlement_panel.w, &menu->settlement_panel.h);
+        const char *button = "gfx/interface/standard_button_112.dds";
+        menu->settlement_build = ck2_load_texture(menu->renderer, menu->asset_root, button);
+        menu->settlement_hover = ck2_load_hover(menu->renderer, menu->asset_root, button);
+        SDL_QueryTexture(menu->settlement_build ? menu->settlement_build : menu->assets->compact_button,
+                         NULL, NULL, &menu->settlement_button.w, &menu->settlement_button.h);
+        SDL_strlcpy(menu->settlement_headline, "Create Holding", sizeof menu->settlement_headline);
+        SDL_strlcpy(menu->settlement_build_label, "Build", sizeof menu->settlement_build_label);
+        SDL_strlcpy(menu->settlement_types[0], "Castle", sizeof menu->settlement_types[0]);
+        SDL_strlcpy(menu->settlement_types[1], "City", sizeof menu->settlement_types[1]);
+        SDL_strlcpy(menu->settlement_types[2], "Temple", sizeof menu->settlement_types[2]);
+        struct ck2_translation labels[] = {
+            {"FOUND_SETTLEMENT", menu->settlement_headline, sizeof menu->settlement_headline},
+            {"SM_BUILD", menu->settlement_build_label, sizeof menu->settlement_build_label},
+            {"castle", menu->settlement_types[0], sizeof menu->settlement_types[0]},
+            {"city", menu->settlement_types[1], sizeof menu->settlement_types[1]},
+            {"temple", menu->settlement_types[2], sizeof menu->settlement_types[2]},
+        };
+        ck2_translate(menu->asset_root, labels, SDL_arraysize(labels));
+    }
+    SDL_QueryTexture(background, NULL, NULL, &menu->building_panel.w, &menu->building_panel.h);
+    SDL_QueryTexture(close, NULL, NULL, &menu->building_close_area.w, &menu->building_close_area.h);
+    menu->settlement_close.w = menu->building_close_area.w;
+    menu->settlement_close.h = menu->building_close_area.h;
+    return 0;
+}
+
+static const struct holding *viewed_holding(const struct menu *menu)
+{
+    return menu->building_slot < menu->holdings.count ? &menu->holdings.slots[menu->building_slot] : NULL;
+}
+
+static bool owns_county(const struct menu *menu, struct realm_title_info *title)
+{
+    return menu->campaign_ruler_id && menu->selected &&
+        realm_county_info(&menu->realms, (size_t)(menu->selected - menu->provinces.provinces), false, title) &&
+        title->holder == menu->campaign_ruler_id;
+}
+
+static bool can_build_at(const struct menu *menu, const struct holding *holding)
+{
+    struct realm_title_info title;
+    if (!menu->campaign_ruler_id || !menu->selected)
+        return false;
+    if (construction_owns_settlement(&menu->construction, holding->id))
+        return true;
+    if (realm_title_info(&menu->realms, holding->id, &title) && title.holder)
+        return title.holder == menu->campaign_ruler_id;
+    return menu->building_slot == 0 && owns_county(menu, &title);
+}
+
+static bool settlement_candidate(const struct menu *menu, struct realm_title_info *barony)
+{
+    struct realm_title_info county;
+    return owns_county(menu, &county) && realm_vacant_barony(&menu->realms, county.id, &menu->holdings, barony);
+}
+
+static SDL_Rect settlement_row_area(const struct menu *menu, SDL_Rect area, enum holding_type type)
+{
+    area.x += menu->settlement_list.x;
+    area.y += menu->settlement_list.y + (type - HOLDING_CASTLE) * menu->settlement_row_height;
+    return area;
+}
+
+static SDL_Rect settlement_build_area(const struct menu *menu, enum holding_type type)
+{
+    return settlement_row_area(menu, menu->settlement_button, type);
+}
+
+static bool settlement_view(const struct menu *menu)
+{
+    return menu->settlement_bg && !viewed_holding(menu);
+}
+
+static void draw_settlement(SDL_Renderer *renderer, const struct menu_assets *assets, const struct menu *menu)
+{
+    SDL_RenderCopy(renderer, menu->settlement_bg, NULL, &menu->settlement_panel);
+    SDL_RenderCopy(renderer, menu->building_close, NULL, &menu->settlement_close);
+    const SDL_Rect title = menu->settlement_title;
+    campaign_text(renderer, assets, menu->settlement_headline, title.x + title.w / 2, title.y);
+    const struct holding *pending;
+    const unsigned remaining = construction_settlement_pending(&menu->construction, menu->selected->id, &pending);
+    char line[160];
+    if (remaining) {
+        snprintf(line, sizeof line, "%.96s: %u days left", pending->name, remaining);
+        campaign_text(renderer, assets, line, title.x + title.w / 2, menu->settlement_list.y + 24);
+        return;
+    }
+    struct realm_title_info barony;
+    if (!settlement_candidate(menu, &barony)) {
+        campaign_text(renderer, assets, "Requires direct ownership and a vacant barony",
+                      title.x + title.w / 2, menu->settlement_list.y + 24);
+        return;
+    }
+    snprintf(line, sizeof line, "%.96s   |   %zu / %zu slots", barony.name,
+             menu->holdings.count, menu->holdings.capacity);
+    campaign_text(renderer, assets, line, title.x + title.w / 2, title.y + 28);
+    for (enum holding_type type = HOLDING_CASTLE; type <= HOLDING_TEMPLE; ++type) {
+        unsigned gold, days;
+        const bool valid = construction_settlement_quote(&menu->construction, &menu->holdings,
+                                                          menu->selected->id, type, &gold, &days);
+        SDL_Rect art = settlement_row_area(menu, menu->settlement_art, type);
+        SDL_Texture *texture = assets->holding_art[type];
+        SDL_QueryTexture(texture, NULL, NULL, &art.w, &art.h);
+        art.w /= 2;
+        art.h /= 2;
+        SDL_RenderCopy(renderer, texture, NULL, &art);
+        SDL_SetTextureColorMod(assets->font, 35, 25, 15);
+        setup_label(renderer, assets, menu->settlement_types[type - HOLDING_CASTLE],
+                    settlement_row_area(menu, menu->settlement_name, type), 0);
+        SDL_SetTextureColorMod(assets->font, 255, 255, 255);
+        if (valid) {
+            snprintf(line, sizeof line, "%u Days", days);
+            setup_label(renderer, assets, line, settlement_row_area(menu, menu->settlement_time, type), 0);
+            snprintf(line, sizeof line, "%u gold", gold);
+            setup_label(renderer, assets, line, settlement_row_area(menu, menu->settlement_cost, type), 0);
+        } else {
+            setup_label(renderer, assets, "Unavailable", settlement_row_area(menu, menu->settlement_time, type), 0);
+        }
+        const SDL_Rect button = settlement_build_area(menu, type);
+        const bool enabled = valid && menu->campaign.treasury >= gold;
+        SDL_Texture *sprite = menu->settlement_build ? menu->settlement_build : assets->compact_button;
+        if (enabled && SDL_PointInRect(&menu->pointer, &button))
+            sprite = menu->settlement_hover ? menu->settlement_hover : assets->compact_hover;
+        SDL_SetTextureColorMod(sprite, enabled ? 255 : 110, enabled ? 255 : 110, enabled ? 255 : 110);
+        SDL_RenderCopy(renderer, sprite, NULL, &button);
+        SDL_SetTextureColorMod(sprite, 255, 255, 255);
+        setup_label(renderer, assets, menu->settlement_build_label, button, 0);
+    }
+}
+
+static size_t building_count(const struct menu *menu, const struct holding *holding)
+{
+    size_t count = 0;
+    for (size_t i = 0; holding && i < menu->construction.count; ++i)
+        count += menu->construction.catalog[i].type == holding->type;
+    return count;
+}
+
+static void scroll_buildings(struct menu *menu, int amount)
+{
+    const int count = (int)building_count(menu, viewed_holding(menu));
+    const int rows = menu->building_list.h / menu->building_row_height;
+    menu->building_scroll = (size_t)SDL_clamp((int)menu->building_scroll - amount, 0, SDL_max(0, count - rows));
+}
+
+static SDL_Rect building_row(const struct menu *menu, size_t row)
+{
+    SDL_Rect rect = menu->building_list;
+    rect.y += (int)row * menu->building_row_height;
+    rect.h = menu->building_row_height;
+    return rect;
+}
+
+static void draw_buildings(SDL_Renderer *renderer, const struct menu_assets *assets,
+                           const struct menu *menu)
+{
+    if (!menu->building_open)
+        return;
+    if (settlement_view(menu)) {
+        draw_settlement(renderer, assets, menu);
+        return;
+    }
+    const SDL_Rect panel = menu->building_panel, title = menu->building_title;
+    const struct holding *holding = viewed_holding(menu);
+    SDL_RenderCopy(renderer, menu->building_bg, NULL, &panel);
+    SDL_RenderCopy(renderer, menu->building_close, NULL, &menu->building_close_area);
+    campaign_text(renderer, assets, holding ? (*holding->name ? holding->name : holding->id)
+                                            : "Empty holding slot", title.x + title.w / 2, title.y);
+    if (!holding) {
+        char slots[96];
+        snprintf(slots, sizeof slots, "%zu of %zu county holding slots occupied",
+                 menu->holdings.count, menu->holdings.capacity);
+        campaign_text(renderer, assets, slots, panel.x + panel.w / 2, panel.y + 102);
+        campaign_text(renderer, assets, "New holding construction pending vanilla research",
+                      panel.x + panel.w / 2, panel.y + 132);
+        return;
+    }
+
+    SDL_Texture *art = assets->holding_art[holding->type];
+    SDL_Rect art_area = menu->building_art_area;
+    SDL_QueryTexture(art, NULL, NULL, &art_area.w, &art_area.h);
+    SDL_RenderCopy(renderer, art, NULL, &art_area);
+    const bool owns = can_build_at(menu, holding);
+    campaign_text(renderer, assets, owns ? "Select an available building to construct it"
+                                        : "You do not directly control this holding",
+                  panel.x + panel.w / 2, panel.y + 122);
+    const size_t rows = (size_t)(menu->building_list.h / menu->building_row_height);
+    int width = 0, height = 0;
+    SDL_QueryTexture(menu->building_row, NULL, NULL, &width, &height);
+    static const char *const labels[] = {
+        "Build", "Built", "", "Holding busy", "Requirements", "Inspect only", "Needs gold"
+    };
+    for (size_t i = 0, index = 0; i < menu->construction.count && index < menu->building_scroll + rows; ++i) {
+        const struct building *building = &menu->construction.catalog[i];
+        if (building->type != holding->type)
+            continue;
+        if (index++ < menu->building_scroll)
+            continue;
+        unsigned days;
+        const enum building_status status = construction_status(&menu->construction, holding,
+            i, owns, menu->campaign.treasury, &days);
+        const SDL_Rect area = building_row(menu, index - 1 - menu->building_scroll);
+        const bool hover = status == BUILD_AVAILABLE && SDL_PointInRect(&menu->pointer, &area);
+        const SDL_Rect source = {hover ? width / 3 : 0, 0, width / 3, height};
+        SDL_RenderCopy(renderer, menu->building_row, &source, &area);
+        char detail[96];
+        if (status == BUILD_RUNNING)
+            snprintf(detail, sizeof detail, "%u days left", days);
+        else if (status == BUILD_AVAILABLE || status == BUILD_UNAFFORDABLE)
+            snprintf(detail, sizeof detail, "%s (%ug, %ud)", labels[status], building->gold, building->days);
+        else
+            snprintf(detail, sizeof detail, "%s", labels[status]);
+        setup_label(renderer, assets, *building->name ? building->name : building->id,
+                    (SDL_Rect){area.x + 4, area.y, area.w * 5 / 8 - 4, area.h}, 0);
+        setup_label(renderer, assets, detail,
+                    (SDL_Rect){area.x + area.w * 5 / 8, area.y, area.w * 3 / 8, area.h}, 0);
+    }
+}
+
+static bool building_click(struct menu *menu, SDL_Point point)
+{
+    if (menu->building_open && settlement_view(menu)) {
+        if (SDL_PointInRect(&point, &menu->settlement_close)) {
+            menu->building_open = false;
+            return true;
+        }
+        if (SDL_PointInRect(&point, &menu->settlement_panel)) {
+            struct realm_title_info barony;
+            if (!settlement_candidate(menu, &barony))
+                return true;
+            for (enum holding_type type = HOLDING_CASTLE; type <= HOLDING_TEMPLE; ++type) {
+                const SDL_Rect button = settlement_build_area(menu, type);
+                if (!SDL_PointInRect(&point, &button))
+                    continue;
+                struct holding holding = {.type = type};
+                SDL_strlcpy(holding.id, barony.id, sizeof holding.id);
+                SDL_strlcpy(holding.name, barony.name, sizeof holding.name);
+                if (construction_settlement_start(&menu->construction, &menu->holdings, menu->selected->id,
+                                                  &holding, &menu->campaign.treasury))
+                    menu_sound_play(&menu->music, CUE_GENERIC);
+                break;
+            }
+            return true;
+        }
+    }
+    if (menu->building_open && !settlement_view(menu) && SDL_PointInRect(&point, &menu->building_close_area)) {
+        menu->building_open = false;
+        return true;
+    }
+    if (menu->building_open && !settlement_view(menu) && SDL_PointInRect(&point, &menu->building_panel)) {
+        const struct holding *holding = viewed_holding(menu);
+        SDL_Rect clickable = menu->building_list;
+        clickable.h -= clickable.h % menu->building_row_height;
+        if (holding && SDL_PointInRect(&point, &clickable)) {
+            const size_t clicked = menu->building_scroll +
+                (size_t)((point.y - menu->building_list.y) / menu->building_row_height);
+            for (size_t i = 0, index = 0; i < menu->construction.count; ++i) {
+                if (menu->construction.catalog[i].type != holding->type || index++ != clicked)
+                    continue;
+                if (construction_start(&menu->construction, holding, i, can_build_at(menu, holding),
+                                       &menu->campaign.treasury))
+                    menu_sound_play(&menu->music, CUE_GENERIC);
+                break;
+            }
+        }
+        return true;
+    }
+    if (!menu->selected)
+        return false;
+    for (size_t i = 0; i < menu->holdings.capacity; ++i) {
+        SDL_Rect origin;
+        if (!holding_origin(menu, i, &origin))
+            break;
+        SDL_Texture *frame = i ? menu->assets->holding_frame : menu->assets->holding_capital;
+        const SDL_Rect area = place_holding_texture(frame, origin, menu->holding_frame_area[i != 0], 1);
+        if (SDL_PointInRect(&point, &area)) {
+            menu->building_slot = i;
+            menu->building_open = true;
+            menu->building_scroll = 0;
+            menu_sound_play(&menu->music, CUE_GENERIC);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void advance_campaign_day(struct menu *menu)
+{
+    campaign_advance_day(&menu->campaign);
+    construction_day(&menu->construction);
+    if (menu->selected)
+        construction_settlement_apply(&menu->construction, menu->selected->id, &menu->holdings);
 }
 
 static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *assets,
@@ -527,15 +907,14 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
     campaign_text(renderer, assets, owns_selection ? "Your county" : "Outside your county", 99, 349);
     snprintf(line, sizeof line, "+%u gold per month", campaign_monthly_income(&menu->campaign));
     campaign_text(renderer, assets, line, 99, 379);
-    snprintf(line, sizeof line, "Holding upgrades: %u / %d", menu->campaign.improvements, IMPROVEMENT_LIMIT);
+    snprintf(line, sizeof line, "Holdings: %zu / %zu", menu->holdings.count, menu->holdings.capacity);
     SDL_SetTextureColorMod(assets->font, 36, 26, 16);
     campaign_text(renderer, assets, line, center, 600);
     SDL_SetTextureColorMod(assets->font, 255, 255, 255);
 
     if (menu->selected)
         draw_campaign_holdings(renderer, assets, menu);
-    campaign_text(renderer, assets, campaign_goal_met(&menu->campaign) ? "Goal complete"
-                  : "Upgrade your capital and reach 100 gold.", 472, 740);
+    draw_buildings(renderer, assets, menu);
 }
 
 static void select_province(struct menu *menu, const struct province *province)
@@ -544,10 +923,15 @@ static void select_province(struct menu *menu, const struct province *province)
         return;
     if (menu->province_overlay)
         SDL_DestroyTexture(menu->province_overlay);
+    menu->building_open = false;
     menu->selected = province;
     const unsigned id = province ? province->id : 0;
     if (menu->holding_province != id) {
         holdings_load(&menu->holdings, menu->asset_root, province, menu->start_date);
+        char *history = province_history_read(province, menu->asset_root);
+        construction_history(&menu->construction, history, menu->start_date);
+        SDL_free(history);
+        construction_settlement_apply(&menu->construction, id, &menu->holdings);
         menu->holding_province = id;
     }
     menu->province_overlay = province ? province_highlight(&menu->provinces, menu->renderer,
@@ -961,11 +1345,21 @@ static void open_campaign(struct menu *menu, SDL_Window *window, bool new_game)
 {
     if (!load_campaign_map(menu, window))
         return;
-    if (!menu->holding_layout_ready && load_holding_layout(menu) < 0) {
+    if (!menu->holding_layout_ready && load_holding_layout(menu, menu->assets->hud_province) < 0) {
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Province holdings", SDL_GetError(), window);
         return;
     }
+    if (!menu->construction.count && construction_load(&menu->construction, menu->asset_root) < 0) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Construction", SDL_GetError(), window);
+        return;
+    }
+    if (!menu->building_bg && load_building_layout(menu) < 0) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Construction", SDL_GetError(), window);
+        return;
+    }
     if (new_game) {
+        construction_reset(&menu->construction);
+        menu->building_open = false;
         menu->selected = NULL;
         menu->holding_province = 0;
         menu->holdings = (struct county_holdings){0};
@@ -1457,10 +1851,9 @@ static void activate(struct menu *menu, SDL_Window *window, enum action action)
         break;
     case NEXT_MONTH:
         menu->time_running = false;
-        campaign_advance_month(&menu->campaign);
-        break;
-    case IMPROVE_HOLDING:
-        campaign_improve(&menu->campaign);
+        do {
+            advance_campaign_day(menu);
+        } while (menu->campaign.date.day != 1);
         break;
     case SELECT_HOME:
         select_province(menu, province_by_id(&menu->provinces, menu->home_province));
@@ -1643,6 +2036,8 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
             if (menu->screen == MAP_SETUP && action == UNAVAILABLE &&
                 setup_select(menu, window, (SDL_Point){x, y}))
                 break;
+            if (menu->screen == CAMPAIGN && building_click(menu, (SDL_Point){x, y}))
+                break;
             if (menu->screen == CAMPAIGN && action == UNAVAILABLE &&
                 campaign_map_area((SDL_Point){x, y})) {
                 SDL_Point world;
@@ -1662,6 +2057,11 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
         if (navigable(menu->screen)) {
             const int delta = SDL_clamp(event->wheel.y, -6, 6);
             const int scroll = event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -delta : delta;
+            if (menu->screen == CAMPAIGN && menu->building_open &&
+                SDL_PointInRect(&menu->pointer, &menu->building_panel) && !settlement_view(menu)) {
+                scroll_buildings(menu, scroll);
+                break;
+            }
             if (menu->screen == MAP_SETUP &&
                 SDL_PointInRect(&menu->pointer, &menu->toolbar.lobby[LOBBY_BOOKMARKS].area)) {
                 const int max = SDL_max(0, menu->era.count - lobby_rows(menu, LOBBY_BOOKMARKS));
@@ -1713,8 +2113,12 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
         }
         switch (event->key.keysym.sym) {
         case SDLK_ESCAPE:
-            if (!event->key.repeat)
-                activate(menu, window, menu->screen == MAIN_MENU ? QUIT : BACK);
+            if (!event->key.repeat) {
+                if (menu->screen == CAMPAIGN && menu->building_open)
+                    menu->building_open = false;
+                else
+                    activate(menu, window, menu->screen == MAIN_MENU ? QUIT : BACK);
+            }
             break;
         case SDLK_RETURN:
         case SDLK_KP_ENTER:
@@ -1781,7 +2185,7 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
 static int run_game(const char *root)
 {
     struct menu_assets assets = {0};
-    struct menu menu = {.screen = MAIN_MENU, .running = true, .asset_root = root};
+    struct menu menu = {.screen = MAIN_MENU, .running = true, .asset_root = root, .assets = &assets};
     int status = EXIT_FAILURE;
     SDL_Window *window = SDL_CreateWindow("OpenCK2",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720,
@@ -1833,7 +2237,7 @@ static int run_game(const char *root)
         const Uint64 now = SDL_GetTicks64();
         const bool day_elapsed = menu.time_running && now >= menu.next_day;
         if (day_elapsed) {
-            campaign_advance_day(&menu.campaign);
+            advance_campaign_day(&menu);
             menu.next_day = now + 125;
         }
         const bool content_changed = poll_content_settings(&menu, window);
@@ -1870,6 +2274,13 @@ cleanup:
     era_menu_free(&menu.era);
     setup_toolbar_free(&menu.toolbar);
     settings_free(&menu.settings);
+    construction_free(&menu.construction);
+    SDL_DestroyTexture(menu.building_close);
+    SDL_DestroyTexture(menu.building_row);
+    SDL_DestroyTexture(menu.building_bg);
+    SDL_DestroyTexture(menu.settlement_bg);
+    SDL_DestroyTexture(menu.settlement_build);
+    SDL_DestroyTexture(menu.settlement_hover);
     menu_assets_free(&assets);
     if (renderer)
         SDL_DestroyRenderer(renderer);

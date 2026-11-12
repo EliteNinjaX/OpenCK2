@@ -1,5 +1,6 @@
 #include "../open_launcher/asset_paths.h"
 #include "realms.h"
+#include "holdings.h"
 #include "ck2_script.h"
 #include "../open_launcher/install.h"
 #include <ctype.h>
@@ -441,6 +442,27 @@ bool realm_county_info(const struct realm_map *map, size_t province, bool indepe
         return false;
     title_info(&h->titles[index], info);
     return true;
+}
+
+bool realm_vacant_barony(const struct realm_map *map, const char *county,
+                        const struct county_holdings *holdings, struct realm_title_info *info)
+{
+    const struct realm_history *history = map->history;
+    const struct title *first = NULL;
+    for (size_t i = 0; history && i < history->count; ++i) {
+        const struct title *title = &history->titles[i];
+        if (title->rank != 1 || title->holder || strcmp(title->parent, county) ||
+            (first && first->order < title->order))
+            continue;
+        size_t slot = 0;
+        while (slot < holdings->count && strcmp(title->id, holdings->slots[slot].id))
+            ++slot;
+        if (slot == holdings->count)
+            first = title;
+    }
+    if (first)
+        title_info(first, info);
+    return first != NULL;
 }
 
 size_t realm_vassal_titles(const struct realm_map *map, const struct realm_title_info *liege,
