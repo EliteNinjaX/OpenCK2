@@ -6,7 +6,7 @@ This is a target for reconstructed behavior and architecture. The project uses
 the installed game as a reference.
 
 Read [ROADMAP.md](ROADMAP.md) for the current baseline and priorities, then
-check the [reverse-engineering knowledge base](docs/reverse-engineering/README.md)
+check the [executable research](docs/EXE_RESEARCH.md)
 before starting a new investigation. The same workflow applies to local AI
 agents, Codex, Claude Code, and human contributors.
 
@@ -40,4 +40,4 @@ agents, Codex, Claude Code, and human contributors.
 Contributors new to C can help with reference captures, reproduction steps,
 historical comparisons, data inventories, and documentation. Contributors
 working in C should use the same evidence and verification format. See
-[contributor starting points](docs/reverse-engineering/README.md#where-to-start).
+[contributor starting points](docs/EXE_RESEARCH.md#source-docs-reverse-engineering-readme-md).

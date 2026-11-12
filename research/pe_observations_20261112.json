@@ -1,0 +1,432 @@
+{
+  "size": 24236024,
+  "sha256": "a0cc8e92287ac900b0552f5cca20df5acedf4773244923a77b15bcdbe143b13d",
+  "base": "0x140000000",
+  "sections": [
+    [
+      ".text",
+      5368713216,
+      16351746,
+      1024,
+      16352256
+    ],
+    [
+      ".rdata",
+      5385068544,
+      4398598,
+      16353280,
+      4399104
+    ],
+    [
+      ".data",
+      5389467648,
+      4783476,
+      20752384,
+      2718720
+    ],
+    [
+      ".pdata",
+      5394251776,
+      568920,
+      23471104,
+      569344
+    ],
+    [
+      ".gfids",
+      5394821120,
+      3176,
+      24040448,
+      3584
+    ],
+    [
+      ".tls",
+      5394825216,
+      9,
+      24044032,
+      512
+    ],
+    [
+      "_RDATA",
+      5394829312,
+      9120,
+      24044544,
+      9216
+    ],
+    [
+      ".gehcont",
+      5394841600,
+      36,
+      24053760,
+      512
+    ],
+    [
+      ".rsrc",
+      5394845696,
+      26712,
+      24054272,
+      27136
+    ],
+    [
+      ".reloc",
+      5394874368,
+      146664,
+      24081408,
+      146944
+    ]
+  ],
+  "pdata_function_ranges": 47410,
+  "findings": [
+    {
+      "string": "bloodline.cpp",
+      "file_offset": "0x1003de4",
+      "va": "0x1410055e4",
+      "section": ".rdata",
+      "xrefs": []
+    },
+    {
+      "string": "government.cpp",
+      "file_offset": "0x1069cc4",
+      "va": "0x14106b4c4",
+      "section": ".rdata",
+      "xrefs": []
+    },
+    {
+      "string": "governmentflavor.cpp",
+      "file_offset": "0x106a77c",
+      "va": "0x14106bf7c",
+      "section": ".rdata",
+      "xrefs": []
+    },
+    {
+      "string": "characterhistory.cpp",
+      "file_offset": "0x1009d04",
+      "va": "0x14100b504",
+      "section": ".rdata",
+      "xrefs": []
+    },
+    {
+      "string": "province.cpp",
+      "file_offset": "0x107d534",
+      "va": "0x14107ed34",
+      "section": ".rdata",
+      "xrefs": []
+    },
+    {
+      "string": "provincehistory.cpp",
+      "file_offset": "0x107f4c4",
+      "va": "0x141080cc4",
+      "section": ".rdata",
+      "xrefs": []
+    },
+    {
+      "string": "title.cpp",
+      "file_offset": "0x108cb54",
+      "va": "0x14108e354",
+      "section": ".rdata",
+      "xrefs": []
+    },
+    {
+      "string": "titlehistory.cpp",
+      "file_offset": "0x108eb64",
+      "va": "0x141090364",
+      "section": ".rdata",
+      "xrefs": []
+    },
+    {
+      "string": "map.cpp",
+      "file_offset": "0x1058820",
+      "va": "0x14105a020",
+      "section": ".rdata",
+      "xrefs": []
+    },
+    {
+      "string": "ConsoleCmdManager.cpp",
+      "file_offset": "0x1026374",
+      "va": "0x141027b74",
+      "section": ".rdata",
+      "xrefs": []
+    },
+    {
+      "string": "ConsoleCmdImpl.cpp",
+      "file_offset": "0x1020f84",
+      "va": "0x141022784",
+      "section": ".rdata",
+      "xrefs": []
+    },
+    {
+      "string": "eu3graphicalmap.cpp",
+      "file_offset": "0x1058814",
+      "va": "0x14105a014",
+      "section": ".rdata",
+      "xrefs": []
+    },
+    {
+      "string": "pdxmap.cpp",
+      "file_offset": "0x107af44",
+      "va": "0x14107c744",
+      "section": ".rdata",
+      "xrefs": []
+    },
+    {
+      "string": "source\\bloodline.cpp",
+      "file_offset": "0x1003ddd",
+      "va": "0x1410055dd",
+      "section": ".rdata",
+      "xrefs": []
+    },
+    {
+      "string": "source\\government.cpp",
+      "file_offset": "0x1069cbd",
+      "va": "0x14106b4bd",
+      "section": ".rdata",
+      "xrefs": []
+    },
+    {
+      "string": "\u0000common/bloodlines",
+      "file_offset": "0x10358cf",
+      "va": "0x1410370cf",
+      "section": ".rdata",
+      "xrefs": []
+    },
+    {
+      "string": "common/bloodlines",
+      "file_offset": "0x10358d0",
+      "va": "0x1410370d0",
+      "section": ".rdata",
+      "xrefs": [
+        {
+          "instruction_va": "0x1404dde08",
+          "function": [
+            "0x1404dd640",
+            "0x1404ddf54"
+          ]
+        }
+      ]
+    },
+    {
+      "string": "common/governments",
+      "file_offset": "0x1035618",
+      "va": "0x141036e18",
+      "section": ".rdata",
+      "xrefs": [
+        {
+          "instruction_va": "0x1404ddacf",
+          "function": [
+            "0x1404dd640",
+            "0x1404ddf54"
+          ]
+        }
+      ]
+    },
+    {
+      "string": "bloodlines_window",
+      "file_offset": "0x1037c50",
+      "va": "0x141039450",
+      "section": ".rdata",
+      "xrefs": [
+        {
+          "instruction_va": "0x1404fd11a",
+          "function": [
+            "0x1404fd080",
+            "0x1404fe1d5"
+          ]
+        }
+      ]
+    },
+    {
+      "string": "vassal_entry",
+      "file_offset": "0x1037950",
+      "va": "0x141039150",
+      "section": ".rdata",
+      "xrefs": [
+        {
+          "instruction_va": "0x1404f6817",
+          "function": [
+            "0x1404f67d0",
+            "0x1404f6941"
+          ]
+        }
+      ]
+    },
+    {
+      "string": "icon_topbar_societies",
+      "file_offset": "0x105bc50",
+      "va": "0x14105d450",
+      "section": ".rdata",
+      "xrefs": [
+        {
+          "instruction_va": "0x14065fd1f",
+          "function": [
+            "0x14065f8d0",
+            "0x14065fdf6"
+          ]
+        },
+        {
+          "instruction_va": "0x140660234",
+          "function": [
+            "0x14065fe00",
+            "0x140660301"
+          ]
+        },
+        {
+          "instruction_va": "0x14066a667",
+          "function": [
+            "0x140668af0",
+            "0x14066b165"
+          ]
+        },
+        {
+          "instruction_va": "0x140673d83",
+          "function": [
+            "0x140673b30",
+            "0x140673ee8"
+          ]
+        },
+        {
+          "instruction_va": "0x14068abf3",
+          "function": [
+            "0x14068a440",
+            "0x14068ee4b"
+          ]
+        },
+        {
+          "instruction_va": "0x140a97a68",
+          "function": [
+            "0x140a96820",
+            "0x140a9a349"
+          ]
+        }
+      ]
+    },
+    {
+      "string": "mapmode_governments",
+      "file_offset": "0x105bff8",
+      "va": "0x14105d7f8",
+      "section": ".rdata",
+      "xrefs": [
+        {
+          "instruction_va": "0x140660c69",
+          "function": [
+            "0x140660310",
+            "0x1406610f9"
+          ]
+        },
+        {
+          "instruction_va": "0x1406756bd",
+          "function": [
+            "0x1406755e0",
+            "0x140675ab8"
+          ]
+        },
+        {
+          "instruction_va": "0x14067778f",
+          "function": [
+            "0x140677760",
+            "0x1406777e1"
+          ]
+        },
+        {
+          "instruction_va": "0x14068bfb6",
+          "function": [
+            "0x14068a440",
+            "0x14068ee4b"
+          ]
+        },
+        {
+          "instruction_va": "0x14070d856",
+          "function": [
+            "0x14070d180",
+            "0x14070dad9"
+          ]
+        },
+        {
+          "instruction_va": "0x14070e10f",
+          "function": [
+            "0x14070e0e0",
+            "0x14070e197"
+          ]
+        },
+        {
+          "instruction_va": "0x14070e5e9",
+          "function": [
+            "0x14070e1a0",
+            "0x14070e69a"
+          ]
+        },
+        {
+          "instruction_va": "0x14074bb30",
+          "function": [
+            "0x14073eea0",
+            "0x14074be69"
+          ]
+        },
+        {
+          "instruction_va": "0x1408dbcef",
+          "function": [
+            "0x1408dba70",
+            "0x1408dbdd0"
+          ]
+        },
+        {
+          "instruction_va": "0x1408dc241",
+          "function": [
+            "0x1408dbdd0",
+            "0x1408dc2d6"
+          ]
+        }
+      ]
+    },
+    {
+      "string": "CURRENT_WINTER",
+      "file_offset": "0x107db30",
+      "va": "0x14107f330",
+      "section": ".rdata",
+      "xrefs": [
+        {
+          "instruction_va": "0x1409170cc",
+          "function": [
+            "0x140910520",
+            "0x1409178fc"
+          ]
+        }
+      ]
+    },
+    {
+      "string": "PROVINCE_HOTKEY_INFO",
+      "file_offset": "0x107da60",
+      "va": "0x14107f260",
+      "section": ".rdata",
+      "xrefs": [
+        {
+          "instruction_va": "0x140917156",
+          "function": [
+            "0x140910520",
+            "0x1409178fc"
+          ]
+        }
+      ]
+    },
+    {
+      "string": "TECHNOLOGY",
+      "file_offset": "0x10329f0",
+      "va": "0x1410341f0",
+      "section": ".rdata",
+      "xrefs": [
+        {
+          "instruction_va": "0x14048cbb4",
+          "function": [
+            "0x140475990",
+            "0x14048cfec"
+          ]
+        }
+      ]
+    },
+    {
+      "string": "CK2game.pdb",
+      "file_offset": "0x11738e7",
+      "va": "0x1411750e7",
+      "section": ".rdata",
+      "xrefs": []
+    }
+  ]
+}

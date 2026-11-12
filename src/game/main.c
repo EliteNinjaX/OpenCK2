@@ -20,9 +20,12 @@
 #include "campaign_hud.h"
 #include "map_settlements.h"
 #include "economy.h"
+#include "technology_view.h"
+#include "debug_console.h"
 
 #include <SDL_image.h>
 #include <errno.h>
+#include <ctype.h>
 #include <limits.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -181,6 +184,8 @@ struct menu {
     struct map_mode_state map_modes;
     struct map_settlement_scene settlement_scene;
     struct campaign_hud_ui hud_ui;
+    struct technology_view technology;
+    struct debug_console console;
     bool realms_visible, campaign_active;
     SDL_Point pointer;
     struct campaign campaign;
@@ -442,6 +447,28 @@ static void format_campaign_date(char *buffer, size_t size, struct campaign_date
     static const char *const months[] = {"January", "February", "March", "April", "May", "June",
         "July", "August", "September", "October", "November", "December"};
     snprintf(buffer, size, "%d %s %d", date.day, months[date.month - 1], date.year);
+}
+
+static void draw_debug_console(SDL_Renderer *renderer, const struct menu_assets *assets,
+                               const struct debug_console *console)
+{
+    if (!console || !console->open) return;
+    const SDL_Rect frame = {30, 492, 1050, 376};
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, 8, 9, 13, 228);
+    SDL_RenderFillRect(renderer, &frame);
+    SDL_SetRenderDrawColor(renderer, 211, 176, 102, 255);
+    SDL_RenderDrawRect(renderer, &frame);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+    campaign_text(renderer, assets, "OpenCK2 Developer Console (` to close)", 555, 501);
+    for (unsigned i = 0; i < console->count; ++i) {
+        char line[112];
+        snprintf(line, sizeof line, "%.106s", console->lines[i]);
+        campaign_text(renderer, assets, line, 551, 529 + (int)i * 26);
+    }
+    char input[140];
+    snprintf(input, sizeof input, "> %.127s_", console->input);
+    campaign_text(renderer, assets, input, 551, 838);
 }
 
 static void draw_single_player(SDL_Renderer *renderer, const struct menu_assets *assets,
@@ -2026,6 +2053,9 @@ static void open_campaign(struct menu *menu, SDL_Window *window, bool new_game)
         return;
     }
     if (new_game) {
+        menu->technology.open = false;
+        menu->console.open = false;
+        SDL_StopTextInput();
         construction_reset(&menu->construction);
         menu->character.open = false;
         menu->character.ruler.id = 0;
@@ -2498,6 +2528,10 @@ static void draw(SDL_Renderer *renderer,
         else
             setup_tooltip(renderer, assets, menu);
     }
+    if (menu->screen == CAMPAIGN) {
+        technology_view_draw(&menu->technology, renderer, assets, menu->pointer, centered_text);
+        draw_debug_console(renderer, assets, &menu->console);
+    }
     SDL_RenderPresent(renderer);
 }
 
@@ -2800,6 +2834,72 @@ static void campaign_open_province_owner(struct menu *menu, SDL_Point pointer, b
     if (holder) inspect_campaign_character(menu, holder);
 }
 
+static void toggle_technology(struct menu *menu)
+{
+    if (menu->technology.open) {
+        menu->technology.open = false;
+        return;
+    }
+    if (!menu->technology.loaded && technology_view_load(&menu->technology, menu->renderer,
+                       menu->asset_root, (SDL_Point){WIDTH, HEIGHT}) < 0) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Technology UI: %s", SDL_GetError());
+        return;
+    }
+    menu->technology.open = true;
+    map_gesture_cancel(&menu->map_gesture);
+}
+
+static void submit_console_command(struct menu *menu, SDL_Window *window)
+{
+    char date[80], ruler[128];
+    format_campaign_date(date, sizeof date, menu->campaign.date);
+    const struct ruler_profile *person = realm_ruler(&menu->realms, menu->campaign_ruler_id);
+    snprintf(ruler, sizeof ruler, "%s", person && person->name[0] ? person->name : "Unknown");
+    struct debug_console_context context = {
+        .date = date,
+        .province = menu->selected ? menu->selected->name : NULL,
+        .ruler = ruler,
+        .has_province = menu->selected != NULL,
+        .gold = menu->campaign.treasury + menu->campaign.gold_remainder,
+        .prestige = menu->campaign.prestige,
+        .piety = menu->campaign.piety
+    };
+    if (!menu->console.input[0]) return;
+    char command[180];
+    snprintf(command, sizeof command, "> %.127s", menu->console.input);
+    debug_console_output(&menu->console, command);
+    const struct debug_console_result result = debug_console_execute(&menu->console,
+                                                                      menu->console.input, &context);
+    menu->console.input[0] = '\0';
+    if (result.action == DEBUG_SET_MAP_MODE) {
+        int mode = -1;
+        if (!SDL_strcasecmp(result.argument, "terrain")) mode = MAP_MODE_TERRAIN;
+        if (!SDL_strcasecmp(result.argument, "realms")) mode = MAP_MODE_REALMS;
+        if (mode < 0) debug_console_output(&menu->console, "Only Terrain and Realms are implemented.");
+        else {
+            select_campaign_mode(menu, window, mode);
+            debug_console_output(&menu->console, mode == MAP_MODE_TERRAIN ? "Terrain selected." : "Realms selected.");
+        }
+    } else if (result.action == DEBUG_LIST_TECH) {
+        if (!menu->technology.loaded && technology_view_load(&menu->technology, menu->renderer,
+                                menu->asset_root, (SDL_Point){WIDTH, HEIGHT}) < 0) {
+            debug_console_output(&menu->console, "Technology definitions unavailable; check content mounts.");
+        } else if (!result.argument[0]) {
+            char message[120];
+            snprintf(message, sizeof message, "%zu technology definitions; no researched levels loaded.",
+                     menu->technology.catalog.count);
+            debug_console_output(&menu->console, message);
+        } else {
+            char key[96];
+            snprintf(key, sizeof key, "%s", result.argument);
+            for (char *p = key; *p; ++p) *p = (char)toupper((unsigned char)*p);
+            const struct ck2_technology *entry = ck2_technology_find(&menu->technology.catalog, key);
+            debug_console_output(&menu->console, entry ? "Technology definition exists; level data unavailable."
+                                                       : "Technology key not found.");
+        }
+    }
+}
+
 static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event *event)
 {
     if (event->type == SDL_WINDOWEVENT && menu->game_cursor) {
@@ -2813,6 +2913,55 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
     if (menu->screen == OPTIONS && event->type != SDL_QUIT) {
         if (settings_event(&menu->settings, window, &menu->music, event))
             activate(menu, window, BACK);
+        return;
+    }
+
+    /* Console has priority over map shortcuts, modals and background input. */
+    if (menu->screen == CAMPAIGN && event->type == SDL_KEYDOWN && !event->key.repeat &&
+        event->key.keysym.sym == SDLK_BACKQUOTE) {
+        menu->console.open = !menu->console.open;
+        map_gesture_cancel(&menu->map_gesture);
+        if (menu->console.open) {
+            menu->technology.open = false;
+            SDL_StartTextInput();
+        } else SDL_StopTextInput();
+        return;
+    }
+    if (menu->screen == CAMPAIGN && menu->console.open && event->type != SDL_QUIT) {
+        if (event->type == SDL_TEXTINPUT) {
+            const size_t n = strlen(menu->console.input);
+            size_t j = n;
+            for (const unsigned char *p = (const unsigned char *)event->text.text;
+                 *p && j < OPENCK2_CONSOLE_INPUT; ++p)
+                if (*p >= 32 && *p < 127 && *p != '`') menu->console.input[j++] = (char)*p;
+            menu->console.input[j] = 0;
+        } else if (event->type == SDL_KEYDOWN) {
+            switch (event->key.keysym.sym) {
+            case SDLK_ESCAPE:
+                menu->console.open = false;
+                SDL_StopTextInput();
+                break;
+            case SDLK_BACKSPACE: {
+                size_t n = strlen(menu->console.input);
+                if (n) menu->console.input[n - 1] = 0;
+                break;
+            }
+            case SDLK_RETURN: case SDLK_KP_ENTER:
+                if (!event->key.repeat) submit_console_command(menu, window);
+                break;
+            default: break;
+            }
+        }
+        return;
+    }
+    if (menu->screen == CAMPAIGN && menu->technology.open && event->type != SDL_QUIT) {
+        if (event->type == SDL_KEYDOWN && !event->key.repeat &&
+            event->key.keysym.sym == SDLK_ESCAPE) menu->technology.open = false;
+        if (event->type == SDL_MOUSEBUTTONUP && event->button.button == SDL_BUTTON_LEFT)
+            technology_view_click(&menu->technology,
+                                  (SDL_Point){event->button.x, event->button.y});
+        if (event->type == SDL_MOUSEMOTION)
+            menu->pointer = (SDL_Point){event->motion.x, event->motion.y};
         return;
     }
 
@@ -2898,9 +3047,13 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
                     select_campaign_mode(menu, window, mode);
                     break;
                 }
-                /* Unimplemented original tabs are visible, but do not click through to the map. */
-                if (campaign_hud_ui_nav_hit(&menu->hud_ui, point) >= 0)
+                const int nav = campaign_hud_ui_nav_hit(&menu->hud_ui, point);
+                if (nav == 2) {
+                    toggle_technology(menu);
                     break;
+                }
+                /* Other original tabs remain visible, but cannot click through. */
+                if (nav >= 0) break;
             }
             if (menu->screen == CAMPAIGN &&
                 (campaign_wonder_click(menu, (SDL_Point){x, y}) ||
@@ -3003,6 +3156,10 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
             }
         }
         switch (event->key.keysym.sym) {
+        case SDLK_F5:
+            if (menu->screen == CAMPAIGN && !event->key.repeat)
+                toggle_technology(menu);
+            break;
         case SDLK_ESCAPE:
             if (!event->key.repeat) {
                 if (menu->screen == CAMPAIGN && menu->wonder.open)
@@ -3167,6 +3324,8 @@ cleanup:
     era_menu_free(&menu.era);
     setup_toolbar_free(&menu.toolbar);
     campaign_hud_ui_free(&menu.hud_ui);
+    technology_view_free(&menu.technology);
+    SDL_StopTextInput();
     settings_free(&menu.settings);
     construction_free(&menu.construction);
     character_view_free(&menu.character);

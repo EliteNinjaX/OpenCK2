@@ -1,14 +1,23 @@
 # OpenCK2
 
+### Documentation
+
+- [Roadmap](ROADMAP.md) — active priorities and compatibility goals.
+- [Executable research](docs/EXE_RESEARCH.md) — recovered CK2 function addresses, debug filenames, disassembly notes and provenance.
+- [Game data and interface](docs/GAME_DATA_AND_UI.md) — loose-file loaders, gameplay mechanics and UI tasks.
+- [Development and tests](docs/DEVELOPMENT.md) — consolidated progress, Qwen notes, deferred C++ ideas and regression checklists.
+- [AI/contributor instructions](AGENTS.md) — shared workflow.
+
+
 OpenCK2 reconstructs the original Crusader Kings II engine in C17. Its
 fidelity target is the experience of a native Windows, Linux, and macOS
 port of the original engine. The current build runs on Linux and reads
 assets and data from your local CK2 installation.
 
-Start with the [documentation index](docs/README.md) and the
+Start with the [development notes](docs/DEVELOPMENT.md) and the
 [roadmap](ROADMAP.md) for project status and milestones.
 [AGENTS.md](AGENTS.md) covers the shared workflow for humans, local AI,
-Codex, and Claude Code. The [reverse-engineering knowledge base](docs/reverse-engineering/README.md)
+Codex, and Claude Code. The [executable research](docs/EXE_RESEARCH.md)
 indexes prior findings and gives contributors with or without C experience
 a starting point.
 
@@ -72,7 +81,7 @@ Steam library, pass its game directory with `--assets PATH` or set `CK2_DIR`.
 The menu uses the installed terrain colormap, title and panel sprites,
 Garamond bitmap font, and credits file. **Options** has Game, Video, Audio,
 and Controls tabs. Apply changes the windowed resolution, window mode, and
-music and effect volume for the current session. The [settings TODO](docs/SETTINGS-TODO.md)
+music and effect volume for the current session. The [settings TODO](docs/GAME_DATA_AND_UI.md#source-docs-settings-todo-md)
 tracks the remaining controls. Credits scroll with the wheel, arrow keys,
 or Page Up and Page Down. Escape goes back or exits from the main menu.
 
@@ -96,7 +105,7 @@ sound effects. **Options → Audio → Effect** controls their volume.
 The rules screen supports category filters, a local preset, and default reset.
 Its settings are available for configuration while their simulation effects
 are pending. **Continue** resumes the current prototype campaign until you
-quit OpenCK2. See the [starting-era notes](docs/reverse-engineering/STARTING-ERAS.md) for the REA
+quit OpenCK2. See the [starting-era notes](docs/EXE_RESEARCH.md#source-docs-reverse-engineering-starting-eras-md) for the REA
 findings and installed data sources. Click land provinces to inspect them.
 The prototype goal is to upgrade your capital and build a treasury of
 100 gold. The 1066 start defaults to York when you leave the ruler unselected.
@@ -114,7 +123,7 @@ is a prototype with fixed rules. Saving campaigns and multiplayer are pending.
 
 The menu and campaign render the installed CK2 terrain layers in perspective,
 including elevation, lighting, forests, rivers, and animated water. See the
-[map investigation](docs/reverse-engineering/MAP-RENDERING.md) for the REA evidence and remaining
+[map investigation](docs/EXE_RESEARCH.md#source-docs-reverse-engineering-map-rendering-md) for the REA evidence and remaining
 differences.
 
 ## Steam reference launcher
@@ -149,7 +158,7 @@ The local layout is defined in `launcher/interface/main.gui` and
 `launcher/interface/main.gfx`, with text in `localisation/z_launcher.csv`.
 The layout defines a 1000 by 600 design surface.
 
-See [launcher decompilation milestones and evidence](docs/reverse-engineering/LAUNCHER-DECOMP.md) for the recovered startup, lifecycle, and content-selection logic.
+See [launcher decompilation milestones and evidence](docs/EXE_RESEARCH.md#source-docs-reverse-engineering-launcher-decomp-md) for the recovered startup, lifecycle, and content-selection logic.
 
 ## License
 
