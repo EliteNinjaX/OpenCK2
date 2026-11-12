@@ -3,6 +3,7 @@
 
 #include "setup_toolbar.h"
 #include "realms.h"
+#include "dynasty_arms.h"
 
 enum { CHARACTER_FAMILY_ROWS = 4, CHARACTER_FAMILY_LIMIT = 12, CHARACTER_VASSAL_ROWS = 4 };
 
@@ -54,7 +55,8 @@ struct character_view {
     struct realm_title_info display_title;
     bool has_display_title;
     SDL_Texture *arms, *dynasty_arms;
-    bool dynasty_arms_proxy;
+    bool dynasty_arms_proxy, dynasty_arms_approximate;
+    struct dynasty_arms_runtime *coa_runtime;
     bool open;
 };
 

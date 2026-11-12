@@ -658,3 +658,22 @@ describes the columns, map-wide comparison, and duplicate-file fix.
 3. **True settlement meshes.** Connect `map/positions.txt`, `settlements.gfx`, graphical-culture actors, terrain transforms, and projected sprite/mesh LOD. Current county shields are not a 3D substitute.
 4. **Generated title shields.** Cover county/title/dynasty arms without prebuilt flag files and compare crown overlays and sizes.
 5. **Province panel faith-specific temple art.** Resolve religion graphical culture from authored data and use `GFX_settlement_temple_<culture>_<faith>` variants rather than the documented western fallback.
+
+## 2026-11-12: Dynasty coat-of-arms reconstruction — C17 increment
+
+**Implementation (not 1:1 shader parity):** The character screen's `dynastic_shield` now attempts to render dynasty arms from CK2's mounted `common/dynasties/*.txt`, `interface/coat_of_arms/coats_of_arms.txt`, `interface/coats_of_arms.gfx`, and `common/religions/*.txt`. `src/game/dynasty_arms_core.c/.h` parses authored `data={...}` and expanded `template/layer` forms, graphical religion styles, texture sheets, color palettes, and the template masks. `src/game/dynasty_arms.c/.h` selects the authored atlas frames (including predefined full-color dynasty designs), samples the masks/layers, and composites a software RGBA shield into an SDL texture. `character_view.c/.h` now uses that texture for the separate dynasty shield while preserving the county/kingdom **title flag** for the title shield.
+
+**Concrete data checks:** Original supplied CK2 files yielded 8,083 dynasty records, 1,101 explicitly authored arms (of which 126 use multiple layers), nine style groups and 17 `CoatOfArmsType` templates. Dynasty 106, Plantagenet, defines `data={0 3 0 34 0 0 0}`: template 0, texture index 3, frame 34 from the Christian style's `dynasties.tga` atlas. This is not the title flag for `k_england`. These counts apply to the supplied `00_dynasties.txt`/base interface definitions, not an exhaustive DLC/mod install.
+
+**Important differences from original CK2:** The `gfx/FX/coa_shield.lua` shader/effect was referenced by the original `coats_of_arms.gfx` but its source and the actual `gfx/coats_of_arms` atlas pixels were not supplied in the investigation, so sampled tint weights, frame blending, mask clipping and resolution remain approximations requiring in-game screenshot comparison. Emblem sprite definitions are parsed but **emblem placement is not implemented** (87 authored layers reference nonzero emblems in the inspected file). The game's generated dynasty design RNG, palette exclusion constraints, and special cases have not been recovered. For dynasties with no authored arms, OpenCK2 uses a stable, deterministic *approximate* design selected from data-defined templates and random-allowed atlases, labeled as such in the tooltip. Missing assets retain the earlier title-flag fallback, not a silently invented coat of arms.
+
+**Validation:** `make check-dynasty-arms` passes both synthetic fixtures and original supplied CK2 data (when `CK2_DIR` is set). AddressSanitizer and UndefinedBehaviorSanitizer passed on those parser fixtures and original file. Existing map-core, economy-core, technology-console, government-core, settlement-style and map-position tests passed. `dynasty_arms.c` and `character_view.c` passed targeted C17 syntax checks with temporary SDL type stubs; only a pre-existing unrelated missing-braces warning was observed. **No full SDL game compilation or in-game rendering comparison occurred in this environment.**
+
+**Recommended next verification on Linux:**
+
+1. `make -B game CFLAGS='-O2 -g -Werror'` and `make check-dynasty-arms` (optionally `CK2_DIR='/path/to/Crusader Kings II'`).
+2. Open Edward III of England in 1337. Compare *both* the dynasty shield and the England title flag against the original CK2 screenshot. The dynasty icon should resolve through Plantagenet ID 106, not the `k_england` title flag.
+3. Check a dynasty with explicit multi-layer arms and one with no authored CoA; compare visual details and tooltip provenance separately.
+4. Verify missing atlas assets do not crash and retain fallback. Investigate genuine TGA alpha/CoA shader matching next.
+
+The underlying code remains C17 and uses the mounted CK2 asset search path; no proprietary graphics are embedded in the ZIP.

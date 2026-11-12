@@ -171,6 +171,9 @@ int character_view_load(struct character_view *view, SDL_Renderer *renderer, con
             ranks[rank_count++] = (struct ck2_translation){titles[sex][rank],
                 view->rank_names[sex][rank], sizeof view->rank_names[sex][rank]};
     ck2_translate(root, ranks, rank_count);
+    /* Original CK2 data-driven dynasty CoA templates; missing files leave the
+     * previous title shield fallback available without breaking character UI. */
+    view->coa_runtime = dynasty_arms_open(root);
     view->background.area.y = SDL_max(0, view->background.area.y);
     for (size_t i = 0; i < SDL_arraysize(view->tabs); ++i) {
         view->tabs[i].area.w = view->tabs[i].area.w * 83 / 100;
@@ -327,12 +330,20 @@ void character_view_titles(struct character_view *view, const struct realm_map *
     SDL_DestroyTexture(view->dynasty_arms);
     view->arms = view->has_display_title
         ? era_title_shield_big(renderer, root, view->display_title.id, view->ruler.religion_key) : NULL;
-    /* CK2's dynastic CoA is generated from common/dynasties and graphical
-     * patterns. Reusing a title flag is ONLY a temporary visible proxy. */
-    view->dynasty_arms_proxy = view->ruler.dynasty_id && view->has_display_title;
-    view->dynasty_arms = view->dynasty_arms_proxy
-        ? era_title_shield(renderer, root, view->display_title.id,
-                           view->ruler.religion_key) : NULL;
+    /* Authored dynasty arms are resolved from common/dynasties and the original
+     * interface/coat_of_arms catalog. Unauthored arms use a clearly provisional
+     * deterministic design; missing textures retain the existing title proxy. */
+    view->dynasty_arms_approximate = false;
+    view->dynasty_arms_proxy = false;
+    view->dynasty_arms = dynasty_arms_render(view->coa_runtime, renderer,
+                                             view->ruler.dynasty_id,
+                                             view->ruler.religion_key,
+                                             &view->dynasty_arms_approximate);
+    if (!view->dynasty_arms && view->ruler.dynasty_id && view->has_display_title) {
+        view->dynasty_arms_proxy = true;
+        view->dynasty_arms = era_title_shield(renderer, root, view->display_title.id,
+                                              view->ruler.religion_key);
+    }
     const size_t visible = (size_t)(view->titles_area.w / view->title_entry.w);
     view->title_count = realm_held_titles(realms, view->ruler.id, view->titles,
                                          SDL_min(visible, SDL_arraysize(view->titles)));
@@ -544,7 +555,9 @@ void character_view_draw(const struct character_view *view, SDL_Renderer *render
     }
     if (view->dynasty_arms && view->dynasty_shield_area.w >= 0) {
         area = view->dynasty_shield_area;
-        SDL_QueryTexture(view->dynasty_arms, NULL, NULL, &area.w, &area.h);
+        /* Respect the original GUI widget's dimensions, not the atlas output. */
+        if (area.w <= 0) area.w = 55;
+        if (area.h <= 0) area.h = 62;
         SDL_RenderCopy(renderer, view->dynasty_arms, NULL, &area);
     }
     const struct setup_widget *const icons[] = {&view->gold_icon, &view->prestige_icon, &view->piety_icon};
@@ -660,7 +673,11 @@ void character_view_draw(const struct character_view *view, SDL_Renderer *render
         view->dynasty_shield_area.w > 0 ? view->dynasty_shield_area.w : 55,
         view->dynasty_shield_area.h > 0 ? view->dynasty_shield_area.h : 62})) {
         hover = view->ruler.dynasty;
-        help = "Dynasty shield is a temporary title-flag proxy until CoA patterns are supported";
+        help = view->dynasty_arms_proxy
+            ? "Dynasty texture unavailable: displaying a title-flag fallback"
+            : view->dynasty_arms_approximate
+              ? "Generated dynasty arms (deterministic OpenCK2 fallback; CK2 RNG unverified)"
+              : "Dynasty coat of arms from the original CK2 dynasty and CoA definitions";
     }
     if (view->ruler.religion[0] && SDL_PointInRect(&pointer, &view->religion.area))
         hover = view->ruler.religion;
@@ -770,6 +787,7 @@ void character_view_free(struct character_view *view)
     clear_family(view);
     SDL_DestroyTexture(view->arms);
     SDL_DestroyTexture(view->dynasty_arms);
+    dynasty_arms_close(view->coa_runtime);
     SDL_DestroyTexture(view->portrait_texture);
     for (size_t i = 0; i < SDL_arraysize(view->vassals); ++i) {
         SDL_DestroyTexture(view->vassals[i].portrait);
