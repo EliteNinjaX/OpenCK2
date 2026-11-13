@@ -22,12 +22,15 @@ struct map_province_facts {
     bool loaded;
 };
 struct map_settlement_scene {
+    struct government_holding_evidence *holding_evidence; /* exact barony owners only */
+    size_t holding_evidence_count, holding_evidence_capacity;
     struct map_settlement_marker *markers;
     struct map_province_facts *province_facts; /* indexed by province_map.provinces */
     size_t count, province_fact_count;
     struct campaign_date date;
     struct settlement_styles styles;
     struct government_catalog governments;
+    struct government_religions religions;
 };
 /* Returns -1 if it cannot allocate; optional culture/actor/government assets
  * fail gracefully. Province/holding history must come from mounted CK2 root. */

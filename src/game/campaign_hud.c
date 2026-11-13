@@ -44,6 +44,9 @@ void campaign_hud_ui_load(struct campaign_hud_ui *hud, SDL_Renderer *renderer,
     const int root_node = frontend_gui_find(&gui, -1, "main");
     const int minimap = frontend_gui_find(&gui, root_node, "minimap");
     const int mapmodes = frontend_gui_find(&gui, minimap, "mapmodes");
+    const int menu_area = frontend_gui_find(&gui, root_node, "menu_area");
+    if (menu_area >= 0)
+        load_named(&hud->next_song, &gui, menu_area, "minimap_nextsong", renderer, root, viewport);
     if (root_node >= 0) {
         /* These backgrounds are defined separately from the Society icon in
          * main.gui. The pre-existing raw topbar image does not extend to it. */
@@ -94,6 +97,11 @@ void campaign_hud_ui_load(struct campaign_hud_ui *hud, SDL_Renderer *renderer,
     }
     hud->initialized = true;
     frontend_gui_free(&gui);
+}
+
+bool campaign_hud_ui_next_song_hit(const struct campaign_hud_ui *hud, SDL_Point point)
+{
+    return hud && hud->next_song.texture && SDL_PointInRect(&point, &hud->next_song.area);
 }
 
 int campaign_hud_ui_mode_hit(const struct campaign_hud_ui *hud, SDL_Point point)
@@ -165,6 +173,7 @@ void campaign_hud_ui_draw(const struct campaign_hud_ui *hud, SDL_Renderer *rende
         }
         SDL_SetTextureColorMod(hud->alert_strip.texture, 255, 255, 255);
     }
+    if (hud->next_song.texture) setup_widget_draw(&hud->next_song, renderer, pointer);
     for (int i = 0; i < MAP_MODE_COUNT; ++i) {
         const struct setup_widget *widget = &hud->modes[i];
         if (!widget->texture) continue;
@@ -190,6 +199,7 @@ void campaign_hud_ui_free(struct campaign_hud_ui *hud)
     for (size_t i = 0; i < SDL_arraysize(hud->extension); ++i)
         if (hud->extension[i].texture) SDL_DestroyTexture(hud->extension[i].texture);
     SDL_DestroyTexture(hud->topbar_crown.texture);
+    SDL_DestroyTexture(hud->next_song.texture);
     SDL_DestroyTexture(hud->alert_background.texture);
     SDL_DestroyTexture(hud->alert_strip.texture);
     memset(hud, 0, sizeof *hud);

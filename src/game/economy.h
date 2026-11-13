@@ -4,8 +4,18 @@
 #include "realms.h"
 #include "economy_core.h"
 #include "title_prestige.h"
+#include "law_core.h"
 
+struct taxable_vassal_holding {
+    struct holding holding;
+    unsigned holder_id;
+};
 struct economy_snapshot {
+    struct taxable_vassal_holding *vassal_holdings;
+    size_t vassal_count, vassal_capacity;
+    double annual_law_vassal_tax;
+    unsigned vassal_tax_skipped;
+
     struct holding *direct_holdings;
     size_t direct_count, direct_capacity;
     /* Bookmark-correct direct counties. Used to recognize a settlement
@@ -30,5 +40,9 @@ bool economy_snapshot_track_county(struct economy_snapshot *, unsigned province_
 /* Refreshes finished buildings AND incorporates newly founded holdings in
  * tracked counties. Does not simulate transfers of counties between rulers. */
 void economy_snapshot_refresh(struct economy_snapshot *, const struct construction *);
+/* Computes only holdings of known direct vassals under explicitly selected
+ * tax laws. Unknown obligations, modifiers, and religious exemptions omitted. */
+void economy_snapshot_apply_laws(struct economy_snapshot *, const struct construction *,
+                                 const struct ck2_law_catalog *, const struct ck2_law_state *);
 void economy_snapshot_free(struct economy_snapshot *);
 #endif

@@ -157,6 +157,7 @@ static void read_character(struct ruler_profile *r, const char *block, int cutof
     r->mother = number(field(block, "mother"));
     r->spouse = 0;
     r->deceased = false;
+    r->government_inferred = false;
     struct authored_trait traits[RULER_TRAIT_LIMIT] = {0};
     size_t trait_count = 0;
     read_traits(block, 0, traits, &trait_count);

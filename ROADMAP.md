@@ -95,6 +95,10 @@ in the evidence notes. Record the chosen profile with the result. If the
 reference executable or the analysis provider is unavailable, mark any
 engine behavior that depends on it as unverified.
 
+### Laws and inheritance (in-progress)
+
+The C17 law catalog now loads authored `common/laws` definitions and dated primary-title law selections, with a console inspection path. A supported hereditary-rule preview, selected-law demesne bonus, partial direct-vassal tax estimate and in-memory player-title succession exist. See `docs/DEVELOPMENT.md` for precise boundaries. **Next:** CK2 Laws GUI, historical defaults per title/government, Conclave voting/eligibility, religious tax exemptions, full inheritance and gavelkind, heir lineage/grandchild logic, dynamic vassal levy obligations, dynamic faction/revolt policy and save persistence. Treat law values and eligibility as separate tasks; never equate a developer override with an enacted law.
+
 ## What works at the baseline
 
 **Working** means the feature has a usable path in OpenCK2. **Partial** means
@@ -112,7 +116,7 @@ means the target behavior still needs implementation.
 | Map | Partial. Pannable terrain and Realms views, projected picking, province and sea-zone borders, dynastic names, geometry-based label placement, and CPU water shading with the installed cubemap. The political overlay reflects the start date. | `src/game/map_view.c`, `realms.c`, `campaign.c` |
 | Gameplay | Prototype. The campaign has a clock, fixed treasury/income, province inspection, and holding upgrades. Continue resumes the current process's campaign. The York scenario is a smoke test. | `src/game/campaign.c`, `main.c`, `tests/campaign.c` |
 | Platform support | Partial. Linux build and tests are the baseline. Windows and macOS builds and CI are pending. | `Makefile`, platform boundaries in `src/game/` and `src/open_launcher/` |
-| Saves, simulation systems, multiplayer | Pending beyond the prototype. Full feudal simulation, save interoperability, multiplayer, and achievements are not implemented. | See milestones below |
+| Saves, simulation systems, multiplayer | Partial developer checkpoints for selected mutable OpenCK2 systems (`*.ocks`), including title ownership and construction. Full CK2 save interoperability, complete simulation, multiplayer, and achievements are not implemented. | `checkpoint_core.c`, `docs/DEVELOPMENT.md` |
 
 ## Ordered implementation plan
 
@@ -130,7 +134,7 @@ alongside P1–P4 as the required boundaries become clear.
 | **Platform builds — pending** | Inventory POSIX, Linux desktop, Steam, timing, and filesystem assumptions. Verify behavior on Windows and macOS as each boundary is isolated. | Add a portable build and an automated Windows, Linux, and macOS build/test matrix. Keep a headless simulation target and isolate platform services. Verify compilation and synthetic tests on all three systems, plus launcher and local-asset smoke runs where CK2 files are available. |
 | **P2 Frontend and character UI — partial** | Read `frontend.gui`, `frontend.gfx`, `province.gui`, `main.gui`, and portrait definitions. Trace only behaviors the definitions leave unresolved, including layout anchors, viewport scaling, tooltips, selection gestures, title presentation, and dynamically computed portrait properties. Compare Karl's bookmark and selected portraits under known DLC. | Reuse actual game sprites and fonts for the lobby, date controls, province/character panels, holding slots, government and religion icons, rank and arms, and interaction entries. Implement pointer and keyboard behavior, clipping and scaling, and portrait layer logic. Compare matching screenshots and click paths at 769 and 1066. Verify multiple graphical cultures, ranks, and DLC combinations. |
 | **P3 Map and audio fidelity — partial** | Use the original shaders and [renderer evidence](docs/EXE_RESEARCH.md#source-docs-reverse-engineering-map-rendering-md) to trace water inputs and pass order, coastline and river rendering, map modes, border geometry, label visibility and curvature, and zoom transitions. Use `interface/sound.sfx` plus reference playback for cue routing and ambient conditions. | Add the missing renderer passes, map-mode data, minimap navigation, label fitting and invalidation, and ambient or contextual audio. Verify terrain and Realms captures at the same coordinates and zoom. Check water over several frames, coastal/riverside pixels, labels on major and small realms, and click picking after pan/zoom. Separate visual differences from map-state errors. |
-| **P4 Headless simulation, succession, and saves — pending** | Trace world creation, tick boundaries, update order, RNG use, death and succession, plus save container, IDs, state fields, and ordering. Use controlled snapshots to isolate same-day tie-breaking and save/reload behavior. | Add a deterministic simulation boundary independent of SDL. Wire a persistent world state, title transfer, basic landed inheritance, and read/write support for a pinned non-Ironman save. Verify a fixed death/succession sequence day by day and after reload. Test an OpenCK2 save in CK2 before claiming interoperability. |
+| **P4 Headless simulation, succession, and saves — partial** | Trace world creation, tick boundaries, update order, RNG use, death and succession, plus save container, IDs, state fields, and ordering. Use controlled snapshots to isolate same-day tie-breaking and save/reload behavior. | Add a deterministic simulation boundary independent of SDL. Wire a persistent world state, title transfer, basic landed inheritance, and read/write support for a pinned non-Ironman save. A versioned OpenCK2-only developer checkpoint now exercises selected runtime subsystems; it is not a CK2 save and does not load from the main menu. Verify a fixed death/succession sequence day by day and after reload. Test an OpenCK2 save in CK2 before claiming interoperability. |
 | **P5 Script runtime, economy, and playable ruler — partial** | Trace trigger/effect scopes, event queues and on-actions, modifiers, game-rule resolution, taxation, levies, and construction timing. Start with one observed economy rule and one scripted event. | Add a bounded Clausewitz data parser/evaluator and implement verified scopes, triggers, effects, and rule consumers. Replace fixed economy logic with data-derived income, buildings, and levies. The campaign can inspect holdings and queue a subset of original building definitions. Verify a month's ledger, new settlement construction, building effects, an event outcome, and a game-rule change against the original. See [construction evidence](docs/EXE_RESEARCH.md#source-docs-reverse-engineering-construction-md). Report unsupported script constructs explicitly. |
 | **P6 Diplomacy, war, and AI — pending** | Trace eligibility and resolution for marriage, alliance, claims, factions, war declarations, movement, combat, sieges, peace, and AI scheduling. Isolate inputs and outcomes one subsystem at a time. | Implement one end-to-end path from a ruler interaction through war and peace, with AI actions and territorial changes. Verify eligibility, army movement and combat outcomes, the peace result, changed map labels, and save/reload of the resulting world. Then expand event, religious, and government systems. |
 | **P7 Content breadth and services — pending** | Investigate DLC ownership/gating, DLC-specific mechanics, Workshop/dependency ordering, total-conversion assumptions, long-run AI, multiplayer synchronization, Ironman, and achievements. Use isolated profiles to distinguish installed assets from enabled features. | Expand compatibility by validated DLC/mod scenarios. Add supported services after stable saves and deterministic simulation. Verify paired base/DLC runs, conflicts and dependency ordering, long campaigns, and eventually deterministic replay or multiplayer synchronization. |
@@ -182,3 +186,30 @@ Mark a result verified only for the scenario actually compared. Preserve
 working launcher, menu, rules, and setup entry points while changing
 underlying systems. When a milestone spans multiple sessions, leave the next
 specific probe or failing check so another contributor can resume from it.
+
+
+### Government systems — 2026-11-13 incremental core
+
+- **Partial implemented:** original nomadic, regular/merchant republican and
+  theocratic government definitions and constraints; dated verified barony
+  evidence for capital-based classification; original religion-group/temple
+  rights; original government map colors and provenance; nomadic own-kind
+  vassal-tax exemption; nominal construction and hereditary-law guards.
+- **New partial runtime mechanics:** C17 nomadic clan registration, population
+  and manpower snapshots, manual clan splitting; patrician family registration,
+  funded election-Respect subtotals; trade-post construction keyed to CK2
+  buildings with authored costs/timing/taxes; bishop nominations and manual
+  vacancy-based title appointments under selected investiture laws. These
+  records persist in OpenCK2 checkpoint version 2; version 1 remains readable.
+  Test with `make check-government-mechanics check-checkpoint-core`.
+- **Still missing for CK2 parity:** real nomad land-capacity calculations,
+  dynamic population and clan AI, actual province title redistribution on
+  clan split, nomadic faction demands; palaces, true patrician-house creation,
+  doge ballots and random modifiers, trade zones and trade-network taxes,
+  scripted trade-post construction eligibility; papal decisions, clerical AI,
+  invested temple succession and scripted opinion taxes. The documented
+  formulas are partial inputs, not a finished CK2 simulation.
+- **Repro:** `make check-nomad-republic-theocracy check-governments-core
+  check-byzantine-government CFLAGS='-O2 -g -Werror'`; for original files set
+  `CK2_GOVERNMENT_TEST_FILES` to mounted `common/governments/*.txt` and
+  `CK2_RELIGION_TEST_FILE` to the mounted `00_religions.txt`.

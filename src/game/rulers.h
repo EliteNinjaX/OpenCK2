@@ -25,6 +25,7 @@ struct ruler_profile {
     char name[96], culture_key[64], religion_key[64], dynasty[96], government_key[80];
     char culture[96], religion[96], dna[32], properties[48];
     bool dynasty_titles, female, age_known;
+    bool government_inferred; /* Roman imperial script or holding-derived provisional classification. */
 };
 
 void rulers_family_ids(const char *, const struct ruler_profile *, struct campaign_date,

@@ -1,5 +1,6 @@
 #include "../open_launcher/asset_paths.h"
 #include "realms.h"
+#include "political_map_core.h"
 #include "holdings.h"
 #include "ck2_script.h"
 #include "../open_launcher/install.h"
@@ -8,10 +9,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 struct title {
     char id[72], liege[72], parent[72], name_key[96], name[96];
-    unsigned holder, color, pixels, capital;
+    unsigned holder, bookmark_holder, color, pixels, capital;
     size_t order;
     bool territorial_name;
     int rank, min_x, max_x, min_y, max_y;
@@ -394,6 +396,11 @@ const struct ruler_profile *realm_ruler(const struct realm_map *map, unsigned id
                    sizeof match, ruler_compare);
 }
 
+struct ruler_profile *realm_ruler_mutable(struct realm_map *map, unsigned id)
+{
+    return (struct ruler_profile *)realm_ruler(map, id);
+}
+
 static void title_info(const struct title *title, struct realm_title_info *info)
 {
     SDL_strlcpy(info->id, title->id, sizeof info->id);
@@ -411,6 +418,121 @@ bool realm_title_info(const struct realm_map *map, const char *id, struct realm_
     if (index < 0)
         return false;
     title_info(&h->titles[index], info);
+    return true;
+}
+
+bool realm_register_runtime_ruler(struct realm_map *map, const struct ruler_profile *profile)
+{
+    if (!map || !map->history || !profile || !profile->id) return false;
+    struct realm_history *h=map->history;
+    struct ruler_profile *existing=(struct ruler_profile *)realm_ruler(map,profile->id);
+    if (existing) { *existing=*profile; return true; }
+    if (h->ruler_count>=SIZE_MAX/sizeof(*h->rulers)-1) return false;
+    struct ruler_profile *next=realloc(h->rulers,(h->ruler_count+1)*sizeof(*next));
+    if (!next) return false;
+    h->rulers=next;
+    h->rulers[h->ruler_count++]=*profile;
+    qsort(h->rulers,h->ruler_count,sizeof(*h->rulers),ruler_compare);
+    return true;
+}
+
+bool realm_transfer_runtime_title(struct realm_map *map, const char *id, unsigned old_holder,
+                                  unsigned heir)
+{
+    if (!map || !map->history || !id || !old_holder || !heir || old_holder==heir ||
+        !realm_ruler(map,heir)) return false;
+    struct realm_history *h=map->history;
+    const int index=title_index(h->titles,h->count,id);
+    if (index<0 || h->titles[index].holder!=old_holder) return false;
+    h->titles[index].holder=heir;
+    /* The overlay is rebuilt from runtime holders, not from bookmark files. */
+    for (size_t i=0;i<h->province_count;++i) {
+        const int county=h->county[i];
+        h->province[i]=county>=0 && h->titles[county].holder ?
+            independent(h->titles,h->count,county) : -1;
+    }
+    map->revision=(unsigned)-1;
+    return true;
+}
+
+size_t realm_runtime_inherit_titles(struct realm_map *map,unsigned from,
+                                   const unsigned *heirs,size_t heir_count)
+{
+    if (!map || !map->history || !from || !heirs || !heir_count) return 0;
+    struct realm_history *h=map->history;
+    for (size_t i=0;i<heir_count;++i)
+        if (!heirs[i] || heirs[i]==from || !realm_ruler(map,heirs[i])) return 0;
+    size_t count=0;
+    /* Titles in the same tier are assigned in authored key order. A full CK2
+     * gavelkind allocator also optimizes de jure groups and heir preferences. */
+    for (int rank=5;rank>=1;--rank)
+        for (size_t i=0;i<h->count;++i)
+            if (h->titles[i].holder==from && h->titles[i].rank==rank) {
+                h->titles[i].holder=heirs[count%heir_count];
+                ++count;
+            }
+    if (!count) return 0;
+    for (size_t i=0;i<h->province_count;++i) {
+        const int county=h->county[i];
+        h->province[i]=county>=0 && h->titles[county].holder ?
+            independent(h->titles,h->count,county) : -1;
+    }
+    map->revision=(unsigned)-1;
+    return count;
+}
+
+/* Checkpoint title ownership is a delta from the source bookmark. A restore
+ * starts with that same bookmark; we validate every title and ruler first. */
+size_t realm_runtime_title_overrides(const struct realm_map *map,
+                                     struct realm_title_override *out, size_t capacity)
+{
+    const struct realm_history *h = map ? map->history : NULL;
+    if (!h) return 0;
+    size_t count = 0;
+    for (size_t i = 0; i < h->count; ++i) {
+        const struct title *title = &h->titles[i];
+        if (title->holder == title->bookmark_holder) continue;
+        if (out && count < capacity) {
+            snprintf(out[count].id, sizeof out[count].id, "%s", title->id);
+            out[count].owner = title->holder;
+        }
+        ++count;
+    }
+    return count;
+}
+
+bool realm_runtime_title_overrides_valid(const struct realm_map *map,
+                                         const struct realm_title_override *items, size_t count)
+{
+    const struct realm_history *h = map ? map->history : NULL;
+    if (!h || (count && !items) || count > h->count) return false;
+    for (size_t i = 0; i < count; ++i) {
+        const struct realm_title_override *entry = items + i;
+        if (!entry->id[0] || !memchr(entry->id, 0, sizeof entry->id)) return false;
+        const int index = title_index(h->titles, h->count, entry->id);
+        if (index < 0 || (entry->owner && !realm_ruler(map, entry->owner))) return false;
+        if (i && strcmp(items[i-1].id, entry->id) >= 0) return false;
+    }
+    return true;
+}
+
+bool realm_runtime_title_overrides_restore(struct realm_map *map,
+                                           const struct realm_title_override *items, size_t count)
+{
+    if (!realm_runtime_title_overrides_valid(map, items, count)) return false;
+    struct realm_history *h = map->history;
+    for (size_t i = 0; i < h->count; ++i)
+        h->titles[i].holder = h->titles[i].bookmark_holder;
+    for (size_t i = 0; i < count; ++i) {
+        const int index = title_index(h->titles, h->count, items[i].id);
+        h->titles[index].holder = items[i].owner;
+    }
+    for (size_t i = 0; i < h->province_count; ++i) {
+        const int county = h->county[i];
+        h->province[i] = county >= 0 && h->titles[county].holder ?
+            independent(h->titles, h->count, county) : -1;
+    }
+    map->revision = (unsigned)-1;
     return true;
 }
 
@@ -438,6 +560,14 @@ size_t realm_held_titles(const struct realm_map *map, unsigned holder, struct re
             if (title->holder == holder && title->rank == rank)
                 title_info(title, &out[count++]);
         }
+    return count;
+}
+
+size_t realm_held_title_count(const struct realm_map *map,unsigned holder)
+{
+    const struct realm_history *h=map ? map->history:NULL;
+    size_t count=0;
+    if (h && holder) for (size_t i=0;i<h->count;++i) count+=h->titles[i].holder==holder;
     return count;
 }
 
@@ -575,6 +705,41 @@ size_t realm_direct_vassals(const struct realm_map *map, unsigned liege_holder, 
     return total;
 }
 
+bool realm_direct_vassal_group(const struct realm_map *map, size_t province,
+                                char out[96])
+{
+    if (!out) return false;
+    out[0] = 0;
+    struct realm_title_info county, independent;
+    if (!realm_county_info(map, province, false, &county) ||
+        !realm_county_info(map, province, true, &independent) ||
+        !county.holder || !independent.holder) return false;
+    if (county.holder == independent.holder) {
+        SDL_strlcpy(out, independent.id, 96);
+        return true;
+    }
+    struct realm_title_info cursor = county;
+    for (unsigned depth = 0; depth < 20; ++depth) {
+        struct realm_title_info parent;
+        if (cursor.liege[0] && realm_title_info(map, cursor.liege, &parent) &&
+            strcmp(parent.id, cursor.id)) {
+            if (parent.holder == independent.holder) {
+                SDL_strlcpy(out, cursor.id, 96);
+                return true;
+            }
+            cursor = parent;
+            continue;
+        }
+        /* A duke's counties may lack explicit county-level liege entries.
+         * Find a higher personal title before giving up. */
+        struct realm_title_info primary;
+        if (!realm_primary_title(map, cursor.holder, &primary) ||
+            !strcmp(primary.id, cursor.id)) break;
+        cursor = primary;
+    }
+    return false;
+}
+
 const struct ruler_profile *realm_province_ruler(const struct realm_map *map, size_t province,
                                                   const char **name, unsigned *capital)
 {
@@ -585,6 +750,15 @@ const struct ruler_profile *realm_province_ruler(const struct realm_map *map, si
     *name = title->name;
     *capital = title->capital;
     return realm_ruler(map, title->holder);
+}
+
+bool realm_title_rgb(const struct realm_map *map, const char *id, unsigned *rgb)
+{
+    if (!map || !map->history || !id || !rgb) return false;
+    const int index = title_index(map->history->titles, map->history->count, id);
+    if (index < 0 || !map->history->titles[index].color) return false;
+    *rgb = map->history->titles[index].color;
+    return true;
 }
 
 const char *realm_title_name(const struct realm_map *map, const char *id)
@@ -614,6 +788,7 @@ static int history_load(struct realm_map *map, const char *root, const struct pr
     for (size_t i = 0; i < h->count; ++i) {
         struct title *title = &h->titles[i];
         read_history(root, title, cutoff);
+        title->bookmark_holder = title->holder;
         terms[i] = (struct ck2_translation){title->name_key, title->name, sizeof title->name};
         if (title->holder)
             h->rulers[h->ruler_count++].id = title->holder;
@@ -714,22 +889,12 @@ int realm_map_build(struct realm_map *out, SDL_Renderer *renderer, const char *r
         Uint32 *row = (Uint32 *)((Uint8 *)surface->pixels + y * surface->pitch);
         for (int x = 0; x < w; ++x) {
             const int i = y * w + x, id = screen[i];
-            const bool border = (x > 0 && screen[i - 1] != id) || (y > 0 && screen[i - w] != id);
             const unsigned color = id >= 0 ? titles[id].color : 0;
-            const unsigned red = (color >> 16) & 255, green = (color >> 8) & 255, blue = color & 255;
-            const unsigned neutral = (red + green + blue + 145) / 4;
-            const unsigned blended = ((red * 4 + neutral) / 5) << 16 |
-                                     ((green * 4 + neutral) / 5) << 8 |
-                                     ((blue * 4 + neutral) / 5);
-            const Uint32 province_color = colors[i];
-            const bool local_border = province_color != SDL_MAX_UINT32 &&
-                ((x > 0 && colors[i - 1] != province_color && colors[i - 1] != SDL_MAX_UINT32) ||
-                 (y > 0 && colors[i - w] != province_color && colors[i - w] != SDL_MAX_UINT32));
-            if (id < 0)
-                row[x] = local_border ? 0x48314052u : 0;
-            else
-                row[x] = border ? 0xbf302630u : local_border ? (0xc0000000u | ((blended & 0xfefefe) >> 1))
-                    : (0xa0000000u | blended);
+            /* Realm boundaries use realm identity rather than RGB equality;
+             * county borders remain visible inside an independent realm. */
+            const enum political_edge edge = political_map_edge(screen, colors,
+                         (size_t)w, (size_t)h, (size_t)x, (size_t)y);
+            row[x] = id < 0 ? 0 : political_map_pixel(color, edge);
         }
     }
     overlay = SDL_CreateTextureFromSurface(renderer, surface);

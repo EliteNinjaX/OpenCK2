@@ -27,7 +27,11 @@ int main(void)
         assert(d && d->widget && d->label && d->shortcut);
         assert(map_mode_shortcut(d->shortcut) == i);
         assert(!strcmp(map_mode_definition(i)->widget, d->widget));
-        if (!d->implemented) {
+        if (d->implemented) {
+            assert(map_mode_select(&mode, i));
+            assert((int)mode.selected == i);
+            mode.selected = MAP_MODE_TERRAIN;
+        } else {
             assert(!map_mode_select(&mode, i));
             assert(mode.selected == MAP_MODE_TERRAIN);
         }

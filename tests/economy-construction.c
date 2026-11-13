@@ -18,8 +18,10 @@ int main(void)
         "gold_cost = 5 build_time = 3 upgrades_from = ct_market_1 }";
     struct building catalog[] = {
         {.id="ct_market_1", .type=HOLDING_CITY, .annual_tax=2.0,
+         .levy={.troops={[LEVY_LIGHT_INFANTRY]=10}},
          .gold=3, .days=2, .supported=true, .requirements=market_source},
         {.id="ct_market_2", .type=HOLDING_CITY, .annual_tax=5.0,
+         .levy={.troops={[LEVY_LIGHT_INFANTRY]=40},.levy_size=.1},
          .gold=5, .days=3, .supported=true, .upgrades_from="ct_market_1",
          .requirements=upgrade_source}
     };
@@ -31,8 +33,13 @@ int main(void)
     construction.holding_base_tax[HOLDING_CASTLE] = 4.0;
     construction.holding_base_tax_known[HOLDING_CITY] = true;
     construction.holding_base_tax[HOLDING_CITY] = 12.0;
+    construction.holding_base_levy[HOLDING_CITY].troops[LEVY_LIGHT_INFANTRY] = 75;
+
     const struct holding castle = {.id="b_castle", .type=HOLDING_CASTLE};
     const struct holding city = {.id="b_city", .type=HOLDING_CITY};
+    struct levy_potential troops;
+    assert(construction_holding_levy(&construction, &city, &troops));
+    assert(troops.known && near(troops.total, 75));
     struct county_holdings county = {.slots={castle}, .count=1, .capacity=3};
     struct economy_snapshot economy = {0};
     economy.direct_holdings = malloc(sizeof castle);
@@ -91,6 +98,8 @@ int main(void)
     assert(construction_day(&construction));
     economy_snapshot_refresh(&economy, &construction);
     assert(near(economy.annual_direct_tax, 18.0));
+    assert(construction_holding_levy(&construction, &new_city, &troops));
+    assert(near(troops.total, 85));
     assert(construction_start(&construction, &new_city, 1, true, &treasury));
     assert(treasury == 0);
     for (int i = 0; i < 2; ++i) {
@@ -101,6 +110,9 @@ int main(void)
     assert(construction_day(&construction));
     economy_snapshot_refresh(&economy, &construction);
     assert(near(economy.annual_direct_tax, 21.0));
+    assert(construction_holding_levy(&construction, &new_city, &troops));
+    /* Upgrade replaces the earlier building, including troop counts. */
+    assert(near(troops.total, 126.5));
     assert(economy.direct_count == 2);
     /* A different county's holding is not mysteriously added to our demesne. */
     const struct holding foreign = {.id="b_foreign_city", .type=HOLDING_CITY};

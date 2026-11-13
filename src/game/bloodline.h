@@ -24,6 +24,8 @@ typedef struct {
 /* Loads all the common/bloodlines directory via OpenCK2's mounted asset system.
    Returns false on file/read/allocation errors; previously loaded types remain. */
 bool ck2_bloodlines_load(ck2_bloodline_registry *registry, const char *root);
+/* Pure CK2-script parser entrypoint for validation/fuzzing without SDL assets. */
+bool ck2_bloodlines_parse_text(ck2_bloodline_registry *registry, const char *text);
 void ck2_bloodlines_free(ck2_bloodline_registry *registry);
 const ck2_bloodline_type *ck2_bloodline_find(const ck2_bloodline_registry *registry, const char *key);
 

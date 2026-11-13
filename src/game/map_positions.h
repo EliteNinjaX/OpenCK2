@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-struct map_position { float x, y; bool available; };
+struct map_position { float x, y; bool available, authored_port; };
 struct map_positions { struct map_position *by_id; size_t capacity, count; };
 /* Reads first authored placement point in each map/positions.txt province block.
  * The caller validates Y orientation and on-province occupancy at runtime. */

@@ -1,6 +1,175 @@
+## Original CK2 elective-voting rules and Byzantine succession diagnostics — C17 increment (2026-11-12)
+
+**Reference:** The supplied original `common/laws/succession_laws.txt`
+contains `succ_byzantine_elective` with an `effect = { succession = {
+base_type = feudal_elective voting_rules = byzantine_elective } }` block.
+`common/succession_voting/01_succession_voting_specials.txt` defines that
+voting rule. Its comment gives the election scopes (`ROOT` incumbent,
+`FROM` candidate, `FROMFROM` contested title). Elector selection starts at
+`days = -5`; it uses conditionally applied +30 for the emperor and +10 for
+council members/commanders. Vote strength starts at `days = 5`, with +195
+for the emperor subject to a large number of additional trait, age and
+title-specific modifiers. Candidate selection explicitly considers the
+ruler's relatives, claimants and commanders, and has disqualifying traits
+and other scoped conditions. These are **authored script observations**, not
+confirmed numerical election outcomes from the original executable.
+
+**Implemented:** `election_core.c/.h` loads `common/succession_voting/*.txt`
+from the mounted CK2 game. It indexes the four original rule sections,
+retains the original nested scripted bodies for eventual trigger execution,
+and extracts *top-level* integer baselines and counts without activating
+conditional modifiers. The original law parser now extracts only static
+`effect/succession/{base_type,voting_rules}` assignments, while still
+ignoring unrelated nested law effects and potential/allow triggers. Each
+installed law can therefore find its original voting script rather than
+being assigned a generic elective algorithm. Original files remain read-only;
+later loaded mod overrides replace the earlier named rule.
+
+**Developer console:** `setlaw succ_byzantine_elective` followed by `election`
+reports the current election rule, its section baselines, modifier counts,
+and authored council/commander job/minor-title requirements. The separate
+`electioncandidate <characterID>` (alias `byzcandidate`) can reject a known
+dead candidate or prove rejection when the original candidate trigger
+excludes the incumbent or a currently recorded prohibited trait. The
+three-valued trigger evaluator supports character-ID comparisons, *known
+present* traits, `ROOT`/`FROM` scope and Boolean `AND`/`OR`/`NOT`/`NOR`/`NAND`.
+Unsupported scopes and absent traits are **UNKNOWN, not false**. Even if
+recognized clauses pass, an unresolved clause prevents a candidate from
+being declared valid; no full electorate, ballot, vote strength, predicted
+winner or actual succession is fabricated. No council members/commanders are
+assigned by the diagnostic, and death still does **not** transfer an elective
+title. This is a necessary scripting/data bridge, **not a functioning
+Byzantine election yet**.
+
+**Verification:** `make check-election-core check-law-core
+check-byzantine-government check-console-warfare CFLAGS='-O2 -g -Werror'`.
+Real-file check:
+`make check-election-core CK2_ELECTION_TEST_FILES='/path/to/CK2/common/succession_voting/00_succession_voting.txt /path/to/CK2/common/succession_voting/01_succession_voting_specials.txt'`.
+The supplied data indexed six complete voting-rule sets, including all four
+Byzantine voting sections. Tests include exact script overrides, misleading
+nested clauses, unknown scopes and disqualified known-trait candidates.
+Full SDL game compilation and UI runtime validation remain outstanding on
+Linux Mint. Next: load council and commander appointments; represent actual
+voter/candidate sets; implement safe scoped CK2 trigger evaluation for vote
+scoring and tie-breaking; finally connect proven vote outcomes to in-memory
+title succession. Do not use this diagnostic as proof of elections.
+
+---
+
+## Byzantine imperial government and government diagnostics — C17 increment (2026-11-12)
+
+**Original evidence:** `common/governments/feudal_governments.txt` defines
+`roman_imperial_government`, preferred `CASTLE CITY`, color `{ 143 12 125 }`,
+`frame_suffix = _romanimperial`. Its authored `potential` is **not** a castle
+classifier: an eligible ruler must have primary title `e_byzantium` or
+`e_roman_empire` and either (a) be at the initial non-save-game setup, or
+(b) have `succ_byzantine_elective` on that primary title; `is_patrician = no`
+is also required. `common/laws/succession_laws.txt` defines Byzantine elective.
+This is based on available script files, **not** decompiled government logic.
+
+**Fixed:** Before this increment OpenCK2 parsed government definitions and
+read occasional explicit character-history `government = ...` assignments but
+never evaluated a government trigger. It therefore left the historical
+Byzantine emperor unclassified, or showed a misleading castle-based government
+candidate. A bounded, SDL-free, three-valued evaluator now interprets the
+actual AND/OR/title/has_law/date/is_patrician subset used by the Roman imperial
+script. Unrecognized triggers return UNRESOLVED and never count as true.
+Original character-history assignments take precedence. During campaign
+initialization, OpenCK2 finds eligible imperial title IDs from the **installed
+CK2 government potential script**, confirms the actual dated holder's
+primary title, reads any dated title succession law from `history/titles`,
+then tags the holder's **in-memory** government as Roman imperial when the
+original new-game condition is true. The source files are never modified.
+The new result reaches Governments map-mode colors (CK2's authored purple),
+province holding tooltips, and the character government tooltip. An explicit
+`government_inferred` flag distinguishes this from an authored history value.
+
+**Extra development:** Console command `government [ruler ID]` (alias `gov`)
+reports a landed ruler's title, government and data provenance. The character
+panel no longer reuses a stale family's government when displaying a ruler;
+`setlaw <key>` reevaluates a *playable* inferred imperial government against
+its selected succession law and refreshes the Governments map overlay/panel if
+the type changes. After runtime inheritance the new playable ruler receives
+the same conservative recheck. Missing active-law evidence yields unresolved,
+not an invented switch. Other governments, especially republic, tribal,
+nomadic and feudal, **still need their full potential/allow evaluator**; the
+current holding preference is only a candidate, never a verified assignment.
+The current government's name/icon/frame is not yet a 1:1 replica of CK2.
+The no-patrician bootstrap predicate assumes an imperial holder with no
+explicit patrician character-history government is not a patrician; merchant
+republic histories and patrician status must ultimately be cross-checked.
+
+**Tests:** `make check-governments-core check-byzantine-government
+check-technology-console`. Synthetic fixtures verify precedence, initial
+Byzantine and restored Roman claims, unsupported triggers staying unresolved,
+patrician exclusion, Byzantine-elective transitions and dated title history;
+`check-governments-core CK2_GOVERNMENT_TEST_FILES=...` also verified original
+supplied CK2 government scripts (12 definitions in this snapshot). Full SDL
+build and visual comparison against Byzantium at a matching bookmark must be
+run on the user's CK2 installation; original government-specific decision
+ordering, viceroyalty, imperial elective voting and succession remain pending.
+
+---
+
+## Laws, succession, inheritance and tax obligations — C17 increment (2026-11-12)
+
+**Sources observed:** supplied original CK2 `common/laws/{succession_laws,demesne_laws,ze_obligation_laws,crown_laws,ze_crown_laws,ze_demesne_laws,ze_council_power_laws}.txt`; the runtime also optionally reads `history/titles/<primary_title>.txt` when present in the installed game. These files contain law groups, eligibility triggers, scripted effects, tax/levy modifier values, gender inheritance rules, and dated title law assignments. A law definition is **not** proof of a character's actual historical law or of whether a DLC is active.
+
+**Implemented:** `law_core.c/.h` parses direct CK2 law fields, groups, succession and gender keys, explicitly stored `law = ...` assignments in dated title history, castle/city/temple/tribal vassal tax fractions, centralization's `demesne_size` and levy minimum values. It refuses to read values embedded inside nested scripted triggers/`effect` clauses as unconditional modifiers. The project loads the installed law files on new-game start, then loads explicitly authored laws from the selected ruler's primary title at the chosen bookmark date. Missing historical laws remain **unresolved**; it does not guess defaults from religion/government/DLC. `setlaw` is an intentionally unrestricted *developer override*, not a CK2 law vote.
+
+**Economy:** `economy_snapshot_build()` now tracks the dated holder of each direct holding **and holdings of individually verified direct vassals**; the additional `economy_snapshot_apply_laws()` applies only explicit direct-field tax fractions to those known vassal holdings. Missing tax definitions/rules are counted and exposed by `taxes`. It does not count unknown holders, fabricated tax rates or unverified indirect vassals, and recomputes after construction and law changes without double-counting. Centralization's authored demesne-size bonus now applies on top of the existing demesne baseline. More complex building benefits, law approvals, opinion-based tax, levy contributions, religion-specific bishop payments, over-demesne penalties, tax technology, councillors, vassals' own tax income and legacy taxation exceptions are deferred. Other law categories parse but do not yet change gameplay.
+
+**Succession:** console `heir` previews current selected succession/gender law. `die <current player ID>` runs the existing death system and, **only if** a supported hereditary law and an eligible child are verifiable, transfers in-memory landed titles to direct descendants (primogeniture, ultimogeniture, simplified gavelkind). Runtime children and bookmark historical children are both considered. Historical titled/unlanded children can become in-memory landed rulers. The new holder becomes playable; realm map, selected province, personal holdings, demesne limits and portrait refresh. Original CK2 `history/titles` remains immutable. For split inheritance, the highest rank goes to the first heir and remaining titles are shared round-robin: this is a transparent **temporary algorithm**, not the real CK2 de jure gavelkind allocator. Age comparisons use integer years with character ID for ties rather than exact birth timestamps. No dynasty-wide seniority, elective votes, Byzantine/papal/nomadic/Muslim succession, grandchild representation, election candidates, succession loss events, AI ruler death succession, disinheritance, law change cooldowns, legal `allow`/`potential`, primary-title per-title laws, claims, treasury partition, or game-over handling. When no supported heir is verified, the title holder stays unchanged and the console reports the unresolved succession instead of fabricating an heir.
+
+**Console** (backtick): `laws` lists current primary-title and developer-selected laws; `laws succession`, `laws gender_succession`, `laws feudal_tax`, `laws city_tax`, `laws tax_levy_law_feudal` browse law IDs; `setlaw succ_primogeniture`, `setlaw agnatic_succession`, `heir`, `die <player ID>` demonstrate supported inheritance; `setlaw feudal_tax_2`, `setlaw city_tax_1`, `setlaw centralization_2`, `taxes` demonstrate data-defined taxes/demesne limit. These are **developer commands**, not the original CK2 console commands or a player-facing Laws window.
+
+**Tests:** `make check-law-core check-law-economy check-realm-inheritance` covers law parser nesting, date-scoped history, original supplied CK2 laws, hereditary candidate ordering and distribution, explicit tax fractions, missing definitions and non-duplicated monthly recomputation. Existing economic, family lifecycle and console tests also remain green. Full SDL compilation, original GUI laws screen, UI verification, complete political map and succession visuals, and comparison against original CK2 remain to be tested on Linux Mint. The law-file test can use `CK2_LAW_TEST_FILES='/path/to/common/laws/demesne_laws.txt ...'`.
+
+---
+
 # OpenCK2 — implementation notes, plans, and test history
 
 This document replaces scattered progress reports, Qwen checkpoints, work plans, testing lists and source layout notes. The **current C17 source tree is the implementation authority**; earlier stage reports are preserved below as historical snapshots and may describe unimplemented work that was completed later (or vice versa).
+
+## Character lifecycle and initial warfare — C17 increment (2026-11-12)
+
+**Source baseline:** `OpenCK2_Events_Console_C.zip`. No original game files are rewritten, and no C++ modules were added.
+
+### Character lifecycle
+
+- `family_gameplay_birth()` creates a playable runtime character record with actual parent IDs, dynamic ID, age 0, parental dynasty inheritance (including matrilineal marriage), and the campaign birth date. The `birth` / `charborn` console command creates a baby for the playable ruler and a verified spouse; it reuses the original `common/cultures` naming parser where possible. `conceive` still schedules a later birth.
+- `family_gameplay_death()` records the death date, marks the runtime character deceased and clears known runtime spouse/pregnancy links. `die <character ID>` / `chardie <ID>` / `kill <ID>` can act on a character with either a runtime record or a resolved CK2 character-history record. Historical character files remain unchanged. A dead playable ruler is **not automatically replaced**; succession, inheritance, funeral events and historical AI deaths are future systems.
+- Death is explicitly invoked, not automatically generated from guessed mortality probabilities. Dynamic children have no guaranteed save persistence. The high runtime ID range is distinct from ordinary CK2 historical character IDs.
+
+### Warfare: a playable but provisional military loop
+
+- `warfare_core.c/.h` stores runtime wars, armies, troop counts, movements, battle outcomes and occupations. `warfare_map.c/.h` builds an adjacency graph from the installed CK2 `map/provinces.bmp` raster, excluding water. Straight-line teleportation is not permitted; crossing one adjacent province takes two days **as a placeholder**. Straits, naval movement, supply, neutral-territory military access, and movement restrictions are missing.
+- The console accepts `declarewar <rulerID>`, `peace <rulerID>`, `raise [provinceID]`, `raiseenemy <provinceID>`, `march <armyID> <provinceID>`, `armies`, and `disband <armyID>`. The player's own county must be held directly to raise a levy; enemy armies can only be raised for a declared opposing independent ruler. A county can contribute its potential levy only once in this snapshot to prevent free troop regeneration after disbanding. The province's existing Raise Levies button now calls the same validation path.
+- Army strengths are drawn from `construction_holding_levy()` using historical holdings and completed buildings. Army counters appear on the campaign map; province hover shows present armies and military occupation. Two hostile armies meeting resolve a **deterministic simplified** battle; losing armies are removed, not properly retreated. An unopposed enemy army occupies a province after a **provisional 30-day siege**. Military occupation never transfers title ownership, religion, government or actual CK2 control effects.
+- War identity currently uses independent ruler IDs from bookmark title history; non-independent revolts and detailed vassal obligations are unsupported. War declarations don't validate CK2 casus belli or diplomatic restrictions; peace clears occupations without implementing demands or warscore. No war AI, player succession, commander traits, phases/flanks, morale, tactics, naval fleets, attrition, siege garrisons, army reinforcements, war exhaustion, event chain, alliances or multiplayer state is claimed.
+- Source-of-truth separation: `realm_map` contains dated CK2 title history; the warfare layer stores temporary military occupation independently. The renderer uses existing province projection and settlement positions. Graph routes are built lazily on the first march rather than slowing ordinary map navigation.
+
+**Verification:** `make check-warfare-core check-warfare-map check-family-lifecycle check-console-warfare` passed. A 17-target SDL-independent regression sweep passed; the three new tests also passed with AddressSanitizer and UndefinedBehaviorSanitizer. Full `make -B game CFLAGS='-O2 -g -Werror'` and interactive gameplay still need Linux/SDL verification. No completed CK2 combat formula or event/death probability is asserted.
+
+**Next high-priority implementation:** live landed-title ownership and succession, military recruitment pool/replenishment, armies with persistent force composition, actual CK2 movement/strait adjacencies and modifiers, army battle tactics/commanders and robust war/peace outcomes. All can continue in C17, with any later architecture rewrite explicitly deferred.
+
+---
+
+## Runtime religion and culture conversion — C17 increment (2026-11-12)
+
+**Verified original CK2 source data:** `common/job_actions/00_job_actions.txt` defines the Court Chaplain `action_inquisition` using **Learning** and event references `900 901 902 903`; it defines the Steward `action_settle_tribe` using **Stewardship** and event references `925 20206`. The latter requires a **tribal ruler**, a province governed by that ruler, and different province culture; its `culture_conversion=restricted` rule adds province-neighbor/port qualifications. Inquisition's province-owner and independent-conversion trigger checks are more elaborate than simple cultural/religious mismatch, including special pagan cases. These are observed script facts, **not** fully evaluated CK2 triggers.
+
+**Implemented:** `conversion_core.c/.h` is an SDL-free mutable campaign layer. It parses nested religion/culture definitions (including DLC/mod content from the mounted asset set), validates keys, records province and ruler conversion effects without editing bookmark files, and stages one mission of each type based on the original `common/job_actions` entries. Country history, runtime birth records, and selected provincial culture/religion remain separate. `main.c` loads definitions at campaign start, adds developer-console controls, refreshes province text, settlement graphical culture, and historical Culture/Religion map-mode overlays, and reapplies changed ruler religion/culture after map/history reloads. `realms.c` exposes a mutable **in-memory** ruler profile accessor; the underlying CK2 history files are immutable.
+
+**Console** (backtick): select a county on the map, then `faith orthodox` or `culture english` to apply a **developer event effect** to that province; `charfaith catholic` or `charculture norman` to change the current landed ruler; `missionfaith` / `missionculture` stage a council action on the selected eligible county targeting the active ruler's religion/culture. `conversions` shows staged missions; `resolvefaith` / `resolveculture` manually resolves the staged effect. Use actual CK2 keys; unsupported keys are rejected. These commands are developer tools, not replicas of CK2's player-facing conversion decisions or console syntax. Original localisation is used for selected province and character display values.
+
+**Critical limitations:** The supplied base `common.zip` includes the two council job-action definitions but not their corresponding event scripts, MTTH modifiers, global `on_actions`, council appointments, religious conversion opinion/costs, spontaneous culture spread, province-neighbor checks or an evaluator for CK2's full scope/trigger language. Consequently staged missions **do not automatically succeed or spend piety**; direct and resolve commands are explicit developer-effect injection only. `missionculture` currently requires the player's recorded `tribal_government` and direct county holding; `missionfaith` limits targets to historically in-realm counties. These checks are a conservative subset, **not full original action eligibility**. No saves or mod-trigger execution yet; state is lost on restart. Dynamic population religious and cultural modifiers, taxation/morale penalties, vassal and diplomatic relationships, and historical culture-based names are not recalculated by these effects. The game remains a bookmark-state simulation with some mutable overlays.
+
+**Verification:** `make check-conversion-core` and `make check-technology-console` passed. Parsed uploaded source files: **56** authored faiths and **121** cultures from `00_religions.txt` and `00_cultures.txt`, plus the two council actions. The SDL-independent regression targets (20 executables) passed, as did strict source syntax checks with temporary SDL type stubs. A full SDL build and runtime screenshot comparison require the user's Linux installation.
+
+**Next:** obtain original conversion event scripts (IDs 900–903, 925, 20206, and general culture spread events), implement CK2 scope evaluation and `on_actions` with actual event odds; add Chancellor/Chaplain/Steward assignment UI from original GUI files, realm/province restrictions, mod rules and runtime saves. Keep data and actual effects separate from provisional UI. **Do not invent monthly conversion probabilities.**
+
+---
 
 ## Documentation map (new structure)
 
@@ -17,6 +186,97 @@ This document replaces scattered progress reports, Qwen checkpoints, work plans,
 - Do not use historical progress documents as proof of runtime equivalence or of current source state. Re-run relevant Makefile targets and compare against the installed CK2 game.
 - Keep exact engine executable evidence under **EXE_RESEARCH.md**, not scattered implementation reports. Some archived reports below include context and links; the research document is the canonical executable-evidence record.
 
+
+## Levies and historical map-mode overlay increment — C17 (2026-11-12)
+
+**Baseline:** `OpenCK2_Province_Polish_C.zip`. No conversion to C++ or replacement of CK2's original loose-file definitions.
+
+### Levy foundations (implemented and tested)
+
+- `levy_core.c/.h` represents nine land troop types; tracks `levy_size`, `garrison_size`, `levy_reinforce_rate` and `fort_level` as data-defined modifiers. These are separate from actual raised armies or losses.
+- `construction.c` now parses troop types and levy modifiers for buildings and reads base troops from `common/static_modifiers.txt`. History and completed projects are merged by existing building IDs and only the highest installed level in an upgrade chain contributes. The prior economy/tax code shares the effective-building selector, preserving its behavior.
+- `construction_holding_levy()` supplies an **unraised potential** breakdown from a holding's base and completed buildings. The province's Raise Levies button displays an informational troop breakdown on hover; it does NOT create an invisible army. The read-only console command `levy` displays the selected province's potential.
+- Tested the production Castle building parser against the supplied CK2 `00_Castle.txt`: the original `ca_militia_barracks_1` light infantry/archer values and `ca_keep_1` levy-size modifier were recovered correctly. A gameplay regression ensures completed building upgrades replace previous levy bonuses rather than stacking them. `make check-levy-buildings CK2_CASTLE_BUILDING_FILE=/path/to/common/buildings/00_Castle.txt` requires the user's installed loose file.
+
+### Campaign map modes (11 selectable, 7 deferred)
+
+| Mode | Status / data source |
+|---|---|
+| Terrain, Realms | Previous working renderer preserved |
+| Religion, Culture | Province history keys; authored `common/religions/` and `common/cultures/` colors where present |
+| Economy | Estimated annual sum of historical holding/base/building taxes, **not** the full taxable realm economy |
+| De jure Duchies/Kingdoms/Empires | `common/landed_titles` de jure ancestry and authored title colors where available |
+| Dynasties | County title holder's recorded dynasty ID; stable fallback palette |
+| Direct Vassals | County title's recorded immediate liege; **not** verified CK2 full character-vassal display rules |
+| Governments | Only authoritatively recorded character-history government ID; original government color when defined |
+| Diplomacy, Revolt Risk, Opinions, Trade Zones, Coalitions, Epidemics, Players | Not selected until gameplay data/state exists to render them honestly |
+
+`map_themes.c` renders a perspective-aligned, translucent overlay on the existing `map_view_pick()` geometry. Category lookups are cached between camera movements so panning does not re-read CK2 history/culture files. `map_palette_core.c` parses original RGB float palettes from the CK2 religious and cultural definitions; scripts outside palette definitions are not executed.
+
+**Important limits:** neither CK2's exact map-coloring shader nor its conditional logic is recovered from this work. Color values fall back to a deterministic palette if a referenced item lacks authored colors. Unknown government or province data remains uncolored. The map is a bookmark snapshot: date advancement does not yet change title holders, disease, vassal contracts or opinion state.
+
+**Tests:** `make check-levy-core check-economy-construction check-map-core check-map-themes-core check-map-palette check-technology-console`. Optional original-data tests run with `CK2_PALETTE_FILE` and `CK2_CASTLE_BUILDING_FILE`. The supplied CK2 religion and culture palette files passed in this environment. Full SDL game compilation and runtime screenshots must be verified on Linux Mint with the user's installed dependencies and CK2 assets.
+
+**Future order:** integrate actual available/raised levy pools, game-date reinforcement, army entities and selection/movement; then military diplomacy, war/opinion, disease, trade zones and player ownership for the remaining map modes. Do not pretend current estimated potential troops are immediately raisable or vassal-accessible. These can remain in C unless a concrete architectural need justifies another language.
+
+## Province rendering and holding-state cleanup — C17 increment (2026-11-12)
+
+**Source baseline:** `OpenCK2_Holdings_Graphics_Reconstruction_C.zip`.
+This is an additional source pass, not a verified screen-perfect recreation.
+
+### Confirmed sprite-sheet defect
+
+`interface/province.gfx` defines **both** `GFX_province_capitol_owner_frame`
+and `GFX_province_settlement_owner_frame` as four-frame horizontal
+sprite sheets (`noOfFrames=4`). Previously `load_holding_layout()` retained
+only the ordinary frame texture and `draw_campaign_holdings()` copied the
+**entire** four-frame sheet into every card. This produces oversized opaque
+blocks extending across neighboring holding art and even into the map.
+
+The new code retains separate `struct setup_widget` instances for capital
+and ordinary holdings, draws only a validated single cell with
+`ck2_sprite_frame_rect()`, and retains the original GUI-local offsets. The
+first frame is selected until original CK2's dynamic frame/state rules have
+been verified. It does **not** pretend to implement the unknown state logic.
+
+### Province text and interaction consistency
+
+- Header fields now respect `province.gui` text alignment: name centered,
+  title hierarchy and labels left aligned, tax/culture/religion values right
+  aligned. They clip to their GUI text bounds; smaller UI font is preferred
+  for these dense fields and longer translations.
+- Both the building-click target and holding hover target share the same
+  `holding_frame_rect()` function as the renderer, including culture-specific
+  holding-frame images when available. This prevents mismatched draw/hit
+  rectangles after a graphical-style change.
+- The religion-to-graphical-style lookup uses `religion_style_cache.c` (bounded
+  C cache). The resolver still reads original mod/DLC priority loose files on
+  cache misses. Holding sprites are now reloaded by **graphical style pair**,
+  not by a different religion ID sharing an identical style. The cache is
+  session-scoped; changes to mounted loose files need a restart/reload.
+
+### Source and checks
+
+Changed: `src/game/main.c`, `Makefile`, `docs/DEVELOPMENT.md`, and
+`docs/EXE_RESEARCH.md`. Added:
+`src/game/sprite_frame_core.{c,h}`,
+`src/game/religion_style_cache.{c,h}`,
+`tests/sprite-frame-core.c`, and `tests/religion-style-cache.c`.
+
+`make check-sprite-frame check-religion-style-cache check-province-layout`
+and 15 other SDL-independent regression targets all pass with `-Werror`
+(17 test executables in total).
+New components also pass UndefinedBehaviorSanitizer. Targeted `main.c`
+syntax checks with test-only SDL shims found no new non-shim warnings;
+**full SDL compilation and screenshot comparison are pending on Linux Mint**.
+
+To verify in game: visit Middlesex in 1337, select another county and return,
+compare capital vs ordinary card backgrounds and check no four-frame sheets
+spill across other holdings; click and hover each populated holding to confirm
+only that card responds. Check Catholic vs Orthodox temple visuals as well as
+Muslim/other graphical cultures, and switch the interface language to see
+whether the narrower statistics labels remain readable. Existing incomplete
+levy/supply and generated historical holding owner data remain separate tasks.
 
 ## Province GUI and holding-art reconstruction (2026-11-12)
 
@@ -961,3 +1221,377 @@ make check-map-core check-economy-construction
 4. Press Escape once with the province panel open; it should close without leaving the campaign.
 5. Click the sea and confirm that the panel disappears.
 6. Verify that the empty slots retain their original frames and clicking an occupied slot still opens construction.
+
+## C17 increment: political borders, marriage and runtime children (12 Nov 2026)
+
+**Scope:** This is a bounded foundation, not a claim that the original CK2 diplomacy,
+family simulation, or map shaders have been recovered. The files under `common/`,
+`history/`, and `interface/` remain external installed game data; OpenCK2 does not
+modify them.
+
+### Political map
+
+- `src/game/political_map_core.c/.h` classifies **independent realm boundaries by
+  independent-title identity**, not displayed RGB (different realms can have
+  identical authored colors). It distinguishes county-internal boundaries.
+- `src/game/realms.c` uses that classification to outline the base political
+  map. This is an approximate CPU raster, not the original Clausewitz shader.
+- `realm_direct_vassal_group()` follows authored de-facto lieges and higher
+  personally held titles for the Direct Vassals overlay. Missing historical
+  chains return unknown rather than fabricated political membership.
+- The map is still a **bookmark-era snapshot**. Marriages do not alter title
+  history or political borders without succession/title-transfer mechanics.
+
+### Family simulation
+
+- `src/game/family_gameplay.c/.h` holds mutable spouse links, marriage types,
+  due dates and newly born characters separately from historical profiles.
+- Eligibility for normal and matrilineal marriages checks known ages,
+  deceased status, existing spouse relationships and immediate kinship;
+  CK2's complete script/government/religion constraints and AI acceptance are
+  not yet evaluated. Original character history remains read-only.
+- Minimum male/female marriage age, maximum childbearing age and post-birth
+  waiting period are read from installed `common/defines.lua`; absent rules
+  disable the corresponding actions rather than fabricating values.
+- `conceive` is **opt-in developer functionality**, with a provisional
+  280-day pregnancy duration; it does not represent the original CK2 fertility
+  algorithm, automatic conceptions, stillbirths or genetic inheritance.
+- New children receive runtime IDs and parental links. Normal marriage uses
+  paternal dynasty, `marrymatri` maternal dynasty. Cultural names are chosen
+  deterministically from original `common/cultures/*.txt` `male_names` and
+  `female_names` lists (`src/game/family_names_core.c`). Name weighting and
+  historical naming events are not yet matched to the executable.
+- The character view can merge runtime children into child portrait slots.
+  The historical Dynasty/Family tree data parser, succession mechanics, and
+  persistent saves do **not yet** include generated people.
+- Both landed and unlanded marriage candidates can be retrieved by ID from
+  the mounted character-history source. Unknown candidates are rejected.
+
+### Developer console actions
+
+- `family` — displays the playable ruler's spouse ID and created-child count.
+- `marry <character-id>` — attempt a normal marriage. Uses actual history
+  profiles and refuses known invalid relationships.
+- `marrymatri <character-id>` — attempt a matrilineal marriage.
+- `conceive` — explicitly schedule a pregnancy for the playable ruler and
+  recorded spouse (importing a one-sided authored marriage when possible).
+- `divorce` — dissolve an **active runtime** marriage. Historical CK2 divorce
+  events and marriages are not rewritten.
+- Advance the campaign calendar and inspect your ruler's Family tab after
+  a due date. Pregnancy and newborn console messages are informational only.
+
+### Tests and Linux verification
+
+```sh
+make -B game CFLAGS='-O2 -g -Werror'
+make check-political-core check-family-gameplay check-family-names \
+     check-map-core check-map-themes-core check-tree-history
+```
+
+New C unit tests passed under `-Wall -Wextra -Wpedantic -Werror` and the
+Address/UndefinedBehavior sanitizers. Tests of the original culture-name file
+also passed. Changed SDL-dependent translation units passed **syntax-only**
+checks with temporary stubs; **a real linked SDL build and visual verification
+were not possible in this environment**. On Linux, check political borders at
+zoom changes, direct vassal categories, historical marriages, console messages,
+births after campaign time advances and generated names/children in Family.
+
+**Open items:** accurate political map texture/shader, naval/coast boundaries,
+user-selected liege political modes, all title-history mutations, CK2 fertility
+rates/traits/dynasty prestige, betrothal/concubinage, extended kinship checks,
+inheritance, succession, spouse/candidate UI, runtime genealogy integration,
+save/load, and AI family behavior. None is claimed complete here.
+
+## Console-fired CK2 events (C17, 12 November 2026)
+
+Implemented `event <id> [target id]` with on-demand lookup in the mounted
+`events/*.txt` files.  It accepts numeric IDs (for example `900`) and
+namespaced IDs (for example `WoL.1`).  Script text is read using the existing
+mounted CK2/DLC/mod content lookup.  The game does **not** bundle the event
+files; a valid CK2 installation with `events/` is required.
+
+- `event 900` fires a matched event for the playable ruler if it is a
+  `character_event`, or the currently selected province if it is a
+  `province_event`.  `event <id> <province id>` also targets a different
+  known province.  Character IDs other than the current player are rejected
+  until their runtime stat/effect state exists.
+- The event modal displays localized title/description/option keys using the
+  already loaded CK2 localization catalog.  Click an option, press a number
+  key 1–8, or open the console and use `eventchoose <number>`.  Escape or
+  `eventclose` dismisses the modal without applying option effects.
+- **Developer force-fire semantics:** event triggers, scheduling/MTTH, scoped
+  descriptions and option eligibility are *not evaluated*.  This is an
+  intentional partial implementation, not a recovered CK2 event evaluator.
+- Flat numeric `wealth`, `prestige`, and `piety` option effects update the
+  playable character's campaign resources.  Flat `religion` and `culture`
+  effects are validated using the existing conversion catalog and written
+  to mutable campaign overrides for the correct character/province scope.
+  Direct numeric effects in province scope are skipped because their intended
+  character target cannot safely be inferred.
+- Other scripted effects (`if`, `random`, `ROOT`, `FROM`, character/province
+  scope switches, delayed `character_event`/`province_event` chains, etc.)
+  are **not** executed.  The console reports skipped unsupported effects and
+  any unexecuted `immediate` block.  A capped maximum of eight options is
+  displayed, with a warning for additional options.
+- The initial modal uses a native OpenCK2 frame and CK2 localization; it is
+  **not** CK2's original event shader, picture renderer or exact window skin.
+- In absence of the user's actual game event files, tests use small synthetic
+  scripts.  `make check-events` and `make check-technology-console` test the
+  SDL-independent parsers and console commands; on-device SDL rendering and
+  execution of real DLC/mod event scripts remain to be verified.
+
+Follow-up: record active event scope/targets, implement CK2's trigger/effect
+interpreter and persistent event state, render authored event pictures, and
+support full option counts and scripted chains.  Prefer incremental verified
+behavior over inventing event results.
+
+## 2026-11-12 — Freestyle C17 increment: Bloodlines, Great Works, Next Song
+
+Source baseline: `OpenCK2_Character_Warfare_C.zip`. All three features use the
+original CK2 mounted loose assets; original game files are not modified or
+shipped. The new changes are integrated into the campaign renderer and input
+handlers, with cleanup and bounded SDL-free regression tests.
+
+- **Bloodlines browser:** `src/game/bloodline_view.c/.h` uses the original
+  `interface/bloodlines.gui` positions and `interface/bloodlines.gfx` symbols.
+  Character-screen `button_bloodlines` now opens a scrollable six-entry browser
+  of definitions from `common/bloodlines`. The button no longer does nothing.
+  This is **a definitions catalog, not a membership screen**. Historical
+  bloodline founders, membership and inherited modifiers require real game-state
+  reconstruction; the browser does not fake them.
+- **Great Works:** The existing `wonder_view` uses real dated province history.
+  The character-screen Great Works button can open the first recorded built work,
+  and the original `next_wonder_button` / `previous_wonder_button` move between
+  historical built works at the selected bookmark date. The index is built once
+  on first use and resets for a new campaign. It does not include future or
+  player-built wonders, nor does it modify construction/gameplay rules.
+- **Next Song:** The original `main/menu_area/minimap_nextsong` GUI widget
+  and `GFX_minimap_nextsong` sprite are bound in `campaign_hud`. Clicking it
+  skips to the next available `music/*.ogg`, `.mp3` or `.flac` file found via
+  the mounted asset system. Missing or unsupported audio is ignored safely;
+  the current track is kept if a candidate cannot be loaded. Playlist names
+  are freed with the music subsystem.
+- **Modal correctness:** Bloodlines and Great Works capture input while open;
+  clicks no longer activate the map behind the windows. ESC closes the views.
+- **SDL-free tests:** `make check-music-playlist check-bloodline-browser
+  check-wonder-navigation`. `make check-bloodlines-core` parsed **247** authored bloodline definitions from the
+  four supplied source files and passed AddressSanitizer/UBSan. Existing campaign-core regressions also remain
+  part of the test plan. Full SDL compilation and in-game appearance need
+  confirmation on the user's CK2 installation.
+
+Outstanding work: recover historical bloodline instantiation and membership,
+add founder portraits and living-member browsing, support Great Work construction
+state/upgrade effects, implement context-sensitive music playlist rules, and
+compare the actual modal sizes against CK2 at the same display resolution.
+
+## 2026-11-13 — Core development: native OpenCK2 campaign checkpoints (partial)
+
+Source baseline: `OpenCK2_Byzantine_Election_Scripts_C.zip`.  This increment
+adds a **versioned OpenCK2-native checkpoint** for the mutable systems that
+already exist, not a CK2 save parser or a claim of CK2 save interoperability.
+The implementation is in `src/game/checkpoint_core.c/.h`, with stable-ID
+export/restore interfaces in `construction.c` and `realms.c`.
+
+**Developer-console usage (in an active campaign):**
+
+```
+savegame
+savegame byz_test
+loadgame byz_test
+loadgame
+```
+
+`quicksave` and `quickload` are aliases for the corresponding `quick` slot.
+Names must be 1–32 ASCII letters/digits, underscores or hyphens; arbitrary
+paths are rejected. The checkpoint is saved under SDL's user preference folder
+for `OpenCK2/OpenCK2/`, with an `.ocks` extension. `savegame` overwrites a
+named slot via a neighbor `.tmp` file and `rename` **after** a successful
+write. On Linux/Unix filesystems this prevents partial saves from replacing
+an existing valid file, but persistence after sudden power loss and Windows
+rename semantics still require verification; no fsync guarantee is claimed.
+
+Version 1 checkpoint stores the start-bookmark date and original ruler ID,
+current playable ruler ID and home province, campaign date/resources and
+rates, runtime family changes (including births/deaths/pregnancies/traits),
+religion/culture overrides and missions, wars, armies/paths and occupations,
+levy-raising source records, selected laws, building projects and new
+settlements, and title-owner changes since the initial bookmark. Names and
+keys are length-prefixed, all primitive values have explicit encoding, limits
+bound memory/file usage, and an FNV-1a-64 trailer detects accidental damage.
+This checksum is **not cryptographic** and does not authenticate saves.
+
+Restoring is limited to an **already-open campaign from the same bookmark and
+starting ruler**. The loader rejects invalid/corrupted/unrecognized versions,
+unknown law/building IDs, unknown titles/heirs, missing provinces, unsupported
+conversion keys and invalid marching paths. It decodes state into temporary
+allocations before touching gameplay state. The current game is paused after
+loading. The main-menu `Load Game` entry is not connected to this new format.
+To load after restarting OpenCK2, start a new campaign at the **same bookmark
+and with the same ruler** and then use the console `loadgame [slot]` command.
+
+**Known limitations:** this is an intentionally partial *developer snapshot*.
+It does not serialize unhandled event windows, dynamically generated event
+chains, UI state, mod content hashes, CK2 native saves, CK2 Ironman, the full
+historical world, government voting offices, or extra gameplay systems that
+remain unimplemented. The current economic snapshot is recalculated from the
+restored owner/building/law state and the mounted CK2 history. A failed
+memory allocation during the late live title/ruler restoration phase may
+still require restarting the campaign (reported explicitly). Restore under
+changed mods is not guaranteed just because the known identifiers still
+exist. No CK2 reference executable comparison was performed.
+
+**Tests:** `make check-checkpoint-core check-construction-checkpoint
+check-realm-inheritance check-technology-console CFLAGS='-O2 -g -Werror'`.
+The new checkpoint round-trip covers all persisted component categories and
+checks truncation, tampering, unsupported version handling, and preservation
+of an existing save when a new write fails. Construction tests explicitly
+reorder the CK2 building catalog and reject mismatched keys. Title tests
+check deltas and restoration against bookmark owners. AddressSanitizer and
+UndefinedBehaviorSanitizer were run on the checkpoint codec. Full SDL game
+compilation, actual in-game save/load, and save/reload across process
+restarts must be checked on Linux Mint with the user's CK2 installation.
+
+**Next:** a controlled headless campaign-world state with explicit owner and
+reference lifetimes, a complete content/mod fingerprint, fully transactional
+restore, a main-menu Load Game workflow, and CK2 save-format research. Treat
+these as separate milestones; don't equate `*.ocks` with `*.ck2`.
+
+## 2026-11-13 — Government types: nomads, republics, theocracies (partial)
+
+Baseline: `OpenCK2_Core_Checkpoints_C.zip`. The government loader already read
+original `common/governments/*.txt`; this increment uses more of those
+rules in C17, but is **not** the full CK2 government script engine.
+
+- Province history already contains dated holdings. `map_settlements_build`
+  now records **every independently verified barony holder** and its holding
+  type (not merely the visible capital). No inferred county-holder fallback
+  is treated as proof of personal holding ownership. The original character
+  `government` history key wins over all derived classifications.
+- At bookmark start, directly held NOMAD, CITY and TEMPLE holdings can provide
+  provisional `nomadic_government`, `republic_government` and
+  `theocracy_government` assignments, respectively. For a mixed personal
+  demesne, prefer a verified primary barony, then an unambiguous primary-title
+  capital; otherwise refuse to classify. This is **not** evaluation of CK2's
+  whole `potential` expression, and the UI/console identifies the inference.
+  A city does **not** prove merchant-republic government: `is_patrician`,
+  `higher_real_tier_than`, port access, and previous lieges are independent
+  requirements. An explicitly authored merchant republic type is preserved.
+- Religion-group membership and male/female temple holder permissions are
+  read from `common/religions` in a bounded group index. Unknown religion,
+  Muslim religion, and disallowed holder sex prevent *provisional ordinary*
+  theocracy assignment. Original government-religion contradictions or
+  missing titles are not silently reconciled.
+- `common/governments` now also parses `no_vassal_tax`,
+  `vassal_call_to_arms`, `forced_contract`, `landed_inheritance`,
+  `have_gender_laws`, and several authored construction/creation permissions.
+  The first consumer of `no_vassal_tax` excludes nomad->nomad tax transfers
+  in the existing **partial** direct-vassal tax model. The nominee's real
+  religion-tax, opinion and obligation effects remain unresolved.
+- A government with authored `can_build_holdings=no` cannot found settlements
+  through the existing build window. Merchant republics and theocracies are
+  prevented from using OpenCK2's **ordinary hereditary player succession**;
+  their election/appointment systems remain missing and titles stay unchanged
+  on a death rather than being inherited incorrectly. Explicit prohibition of
+  gender laws is enforced for developer law selection, as are unsupported
+  succession-law overrides for merchant/temple rulers. There is **no** nominal
+  substitute election or clerical appointment.
+- `government [landed character ID]` reports assigned type, provenance,
+  preferred holding mask, construction permission, hereditary-policy status,
+  gender-law permission and government-rule tax-exemption count. The
+  Governments map overlay uses authored CK2 colors for resolved assignments.
+
+**Verified scope:** `make check-nomad-republic-theocracy check-governments-core
+check-byzantine-government`, optionally with paths to CK2's original
+`common/governments/*.txt` in `CK2_GOVERNMENT_TEST_FILES` and original
+`00_religions.txt` in `CK2_RELIGION_TEST_FILE`. The supplied files load 12
+original government definitions and 55 original religion-group entries.
+Synthetic tests exercise ownership ambiguity, ordinary versus merchant
+republics, explicit government rules and religious temple restrictions.
+SDL-independent suites passed with `-Werror`. Full SDL build, government
+portraits, faction behavior and comparison against CK2 running at the same
+bookmark are still needed.
+
+**Remaining for 1:1:** nomadic population/manpower, clans and clan vassal
+contracts, nomadic holding rules and faction mechanics; merchant trade posts,
+family palaces, patrician houses and elections, coastal/port conditions,
+republic councils and city tax rights; clerical appointments, papal and temple
+succession, investiture, bishops' tithe and investiture; full potential
+triggers and DLC/mod precedence; reclassification after conversion, law or
+capital changes; AI, user interaction and save/load integration for all new
+systems. Build these from original scripts and reference scenarios, not
+hardcoded generic ratios.
+
+
+## 2026-11-13 — Nomadic clans, merchant republics and clerical appointment core (partial)
+
+**Baseline:** `OpenCK2_Nomadic_Republic_Theocracy_C.zip`. Source stays C17.
+The new SDL-independent `government_mechanics_core.c/.h` reads numerical
+constants from `common/defines.lua` and trade-post building definitions from
+`common/buildings/00_tradepost.txt` / `01_tradepost.txt`. No CK2 Lua is executed.
+Unknown or missing required numerical definitions disable those actions rather
+than using substituted values. Game and mod files remain read-only.
+
+**Nomads:** `clanregister <ruler_id> <verified_owned_counties> <population_capacity>`
+requires a recognized nomadic ruler and verified domain. `clans` inspects
+stored population, capacity and manpower; `clansplit <head> <new_head>
+<county_count> <population>` creates another runtime clan after capacity and
+population validation, but **does not transfer real county titles**. Clan
+population and manpower update on a provisional monthly tick using sourced
+`NNomad` multipliers. Manually supplied capacity is NOT automatically derived
+from the CK2 map, empty holdings or clan land demands. A modeled population
+component contributes to the ruler's tax estimate where known.
+
+**Merchant republics:** `patricianadd <ruler_id>` requires a verified merchant
+republic government record. `patricians`, `campaignfund <gold>` and
+`dogeforecast` maintain family fund balances and report the **base Respect
+subtotal** from authored age, prestige and campaign-fund factors, when the
+inputs are known. It does not run the complete CK2 election, any random
+factor, family palaces, or a merchant republic AI. No automatically elected
+Doge is claimed or transferred.
+
+**Trade posts:** `tradeposts` reports projects. `tradebuild <province_id>
+<tr_port_N|tr_enclave_N>` starts a source-defined project for the player's
+registered patrician family when the province has an **authored port anchor**
+in original `map/positions.txt`, the building exists, the CK2 upgrade chain is
+satisfied and treasury covers its CK2 cost. Original `build_time`, `gold_cost`,
+`tradevalue` and `tax_income` are parsed separately: only authored annual tax
+is folded into monthly cash flow (`annual / 12`), not trade value. Build
+prerequisites beyond the implemented upgrade chain, including `potential`,
+`trigger`, coastal checks beyond the port-anchor proxy, dynamic distances,
+Saharan trade routes and trade zones, are not yet evaluated. Do not present
+this as universal CK2 trade-post construction eligibility.
+
+**Theocracy:** `bishopnominate <b_title> <character_id>` checks a verified
+player-controlled temple barony, known living adult candidate and original
+religious temple-holder restrictions. It requires selected
+`investiture_law_0` (Papal Investiture) or `investiture_law_1` (Free
+Investiture) from the existing law state. `bishoplist` shows queued
+nominees. `bishopapprove <b_title>` is a **developer-only explicit approval**:
+when the current bishop is dead or absent and the title transfer succeeds, it
+marks approval and transfers the temple title. It is not actual papal consent
+or automatic bishops' succession. Failed transfer retains the nomination for
+another attempt.
+
+**Persistence:** checkpoint wire format v2 writes and reads bounded clan,
+family, trade-post and nomination records. V1 records remain readable with an
+empty new-government state. Reload rejects missing building definitions,
+unknown title/ruler relationships and malformed state before ordinary restore.
+This is an OpenCK2 developer save (`*.ocks`), NOT a CK2 native save; the
+existing late-stage restore limitation still applies.
+
+**Verification:**
+
+```sh
+make check-government-mechanics check-checkpoint-core check-map-positions \
+    check-nomad-republic-theocracy CFLAGS='-O2 -g -Werror'
+make check-government-mechanics \
+    CK2_DEFINES_TEST_FILE=/path/to/CK2/common/defines.lua \
+    CK2_TRADE_POST_TEST_FILE=/path/to/CK2/common/buildings/00_tradepost.txt
+```
+
+Original script loading, SDL-independent regression tests and sanitizers pass.
+The complete SDL build and actual UI/console behavior have not yet been
+verified in this environment. The next reference probes should compare one
+known nomad-clan growth tick, a real patrician Doge election after campaign
+funding, the port potential conditions at a coastal trade post, and a vacant
+bishop appointment under both investiture laws in matching CK2 bookmarks.

@@ -1,5 +1,6 @@
 #include "music.h"
 #include "ck2_script.h"
+#include "music_playlist_core.h"
 #include "../open_launcher/asset_paths.h"
 #include <stdlib.h>
 
@@ -52,12 +53,53 @@ void menu_music_start(struct menu_music *music, const char *asset_root)
         return;
     music->device_open = true;
     load_effects(music, asset_root);
+    /* The mounted music directory includes DLC/mod overrides. Names are
+       data, never executable commands or absolute filesystem paths. */
+    struct ck2_asset_files listed = ck2_list_assets(asset_root, "music");
+    for (size_t i = 0; i < listed.count; ++i) {
+        if (!music_playlist_is_track(listed.names[i])) {
+            free(listed.names[i]);
+            continue;
+        }
+        listed.names[music->song_count++] = listed.names[i];
+    }
+    music->song_names = listed.names;
+    music->next_song_index = music->song_count;
+
     char *path = ck2_asset_path(asset_root, "music/crusaderkings2_maintitle.ogg");
     music->track = path ? Mix_LoadMUS(path) : NULL;
     free(path);
     menu_music_set_volume(music, 100, 100, 100);
     if (music->track)
         Mix_PlayMusic(music->track, -1);
+}
+
+bool menu_music_next(struct menu_music *music, const char *root)
+{
+    if (!music || !music->device_open || !root || !music->song_count) return false;
+    for (size_t attempt = 0; attempt < music->song_count; ++attempt) {
+        const size_t index = music_playlist_next(music->song_count, music->next_song_index);
+        music->next_song_index = index;
+        const char *name = music->song_names[index];
+        const size_t needed = strlen(name) + sizeof "music/";
+        char *relative = malloc(needed);
+        if (!relative) return false;
+        snprintf(relative, needed, "music/%s", name);
+        char *path = ck2_asset_path(root, relative);
+        free(relative);
+        if (!path) continue;
+        Mix_Music *next = Mix_LoadMUS(path);
+        free(path);
+        if (!next) continue;
+        if (Mix_PlayMusic(next, -1) < 0) {
+            Mix_FreeMusic(next);
+            continue;
+        }
+        Mix_FreeMusic(music->track);
+        music->track = next;
+        return true;
+    }
+    return false;
 }
 
 void menu_music_set_volume(const struct menu_music *music, int master, int track, int effects)
@@ -109,6 +151,7 @@ void menu_sound_finish(struct menu_music *music)
 
 void menu_music_stop(struct menu_music *music)
 {
+    if (!music) return;
     if (music->track) {
         Mix_HaltMusic();
         Mix_FreeMusic(music->track);
@@ -124,5 +167,8 @@ void menu_music_stop(struct menu_music *music)
         Mix_Quit();
     if (music->audio_initialized)
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    for (size_t i = 0; i < music->song_count; ++i)
+        free(music->song_names[i]);
+    free(music->song_names);
     *music = (struct menu_music){0};
 }

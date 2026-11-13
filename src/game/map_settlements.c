@@ -28,6 +28,23 @@ static void load_styles(struct map_settlement_scene *scene, const char *root)
     }
 }
 
+static void load_religion_groups(struct map_settlement_scene *scene, const char *root)
+{
+    struct ck2_asset_files files=ck2_list_assets(root,"common/religions");
+    for (size_t i=0;i<files.count;++i) {
+        const char *file=files.names[i];
+        const size_t len=strlen(file);
+        if (len<4 || strcmp(file+len-4,".txt")) continue;
+        char *source=load_from_directory(root,"common/religions",file);
+        if (!source) continue;
+        if (!government_religions_parse(&scene->religions,source))
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Religion group index incomplete: %s",file);
+        SDL_free(source);
+    }
+    ck2_free_asset_files(&files);
+}
+
 static void estimate_centers(const struct province_map *map, struct map_settlement_scene *scene)
 {
     /* Using a sparse pixel scan once at campaign initialization avoids
@@ -101,6 +118,35 @@ static void apply_authored_positions(const char *root, const struct province_map
     SDL_free(data);
 }
 
+static bool remember_holding(struct map_settlement_scene *scene, const struct holding *holding,
+                             unsigned province_id, unsigned owner)
+{
+    if (!owner || !holding || !holding->id[0]) return true;
+    uint32_t bit = 0;
+    switch (holding->type) {
+    case HOLDING_CASTLE: bit = GOVERNMENT_CASTLE; break;
+    case HOLDING_CITY: bit = GOVERNMENT_CITY; break;
+    case HOLDING_TEMPLE: bit = GOVERNMENT_TEMPLE; break;
+    case HOLDING_TRIBAL: bit = GOVERNMENT_TRIBAL; break;
+    case HOLDING_NOMAD: bit = GOVERNMENT_NOMAD; break;
+    default: return true;
+    }
+    if (scene->holding_evidence_count == scene->holding_evidence_capacity) {
+        size_t cap = scene->holding_evidence_capacity ? scene->holding_evidence_capacity * 2 : 256;
+        if (cap <= scene->holding_evidence_capacity || cap > 100000) return false;
+        void *next = realloc(scene->holding_evidence, cap * sizeof(*scene->holding_evidence));
+        if (!next) return false;
+        scene->holding_evidence = next;
+        scene->holding_evidence_capacity = cap;
+    }
+    struct government_holding_evidence *f =
+        &scene->holding_evidence[scene->holding_evidence_count++];
+    *f = (struct government_holding_evidence){.holder_id=owner,
+        .province_id=province_id,.holding_bit=bit};
+    SDL_strlcpy(f->title_id, holding->id, sizeof f->title_id);
+    return true;
+}
+
 int map_settlements_build(struct map_settlement_scene *scene, const char *root,
                            const struct province_map *provinces, const struct realm_map *realms,
                            struct campaign_date date)
@@ -116,6 +162,7 @@ int map_settlements_build(struct map_settlement_scene *scene, const char *root,
         return SDL_OutOfMemory();
     }
     load_styles(scene, root);
+    load_religion_groups(scene, root);
     if (governments_load(&scene->governments, root) < 0)
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Government definitions unavailable: %s", SDL_GetError());
     for (size_t i = 0; i < provinces->count; ++i) {
@@ -130,6 +177,18 @@ int map_settlements_build(struct map_settlement_scene *scene, const char *root,
                     sizeof scene->province_facts[i].culture);
         SDL_strlcpy(scene->province_facts[i].religion, county.religion_key,
                     sizeof scene->province_facts[i].religion);
+        /* Unlike the visible capital marker, these facts record every
+         * barony with an actual dated title holder; county fallbacks are NOT
+         * proof that the ruler personally holds its city or temple. */
+        for (size_t h = 0; h < county.count; ++h) {
+            struct realm_title_info barony;
+            if (realm_title_info(realms, county.slots[h].id, &barony) && barony.holder &&
+                !remember_holding(scene, county.slots + h, p->id, barony.holder)) {
+                SDL_free(history);
+                map_settlements_free(scene);
+                return SDL_OutOfMemory();
+            }
+        }
         if (county.count) {
             struct map_settlement_marker *m = scene->markers + scene->count;
             const struct holding *capital = county.slots;
@@ -205,8 +264,10 @@ void map_settlements_free(struct map_settlement_scene *scene)
 {
     if (!scene) return;
     free(scene->markers);
+    free(scene->holding_evidence);
     free(scene->province_facts);
     settlement_styles_destroy(&scene->styles);
     government_catalog_destroy(&scene->governments);
+    government_religions_free(&scene->religions);
     *scene = (struct map_settlement_scene){0};
 }

@@ -13,6 +13,7 @@ struct campaign_hud_ui {
     struct setup_widget extension[3];
     struct setup_widget navigation[8];
     struct setup_widget modes[MAP_MODE_COUNT];
+    struct setup_widget next_song;
     bool initialized;
 };
 
@@ -22,6 +23,7 @@ void campaign_hud_ui_load(struct campaign_hud_ui *, SDL_Renderer *, const char *
 void campaign_hud_ui_draw_background(const struct campaign_hud_ui *, SDL_Renderer *);
 void campaign_hud_ui_draw(const struct campaign_hud_ui *, SDL_Renderer *, SDL_Point,
                           enum map_mode_id);
+bool campaign_hud_ui_next_song_hit(const struct campaign_hud_ui *, SDL_Point);
 int campaign_hud_ui_mode_hit(const struct campaign_hud_ui *, SDL_Point);
 int campaign_hud_ui_alert_hit(const struct campaign_hud_ui *, SDL_Point);
 int campaign_hud_ui_nav_hit(const struct campaign_hud_ui *, SDL_Point);

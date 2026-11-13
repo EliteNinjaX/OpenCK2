@@ -16,7 +16,7 @@ static bool read_point(struct ck2_lexer *l, struct map_position *position)
     const double y = strtod(y_text, &end);
     const bool valid_y = y_text[0] && !*end && isfinite(y);
     if (valid_x && valid_y && x >= 0 && y >= 0 && x < 200000 && y < 200000) {
-        *position = (struct map_position){(float)x, (float)y, true};
+        position->x=(float)x; position->y=(float)y; position->available=true;
     }
     ck2_skip_scope(l);
     return true;
@@ -38,7 +38,11 @@ static bool parse_id(struct map_positions *map, struct ck2_span id, struct ck2_l
         const struct ck2_span value = ck2_lex(lex);
         if (ck2_span_eq(value, "{")) {
             if (ck2_span_eq(key, "position")) read_point(lex, &position);
-            else ck2_skip_scope(lex);
+            else if (ck2_span_eq(key, "port")) {
+                struct map_position port={0};
+                read_point(lex,&port);
+                if (port.available) position.authored_port=true;
+            } else ck2_skip_scope(lex);
         }
     }
     if (!ck2_span_eq(key, "}")) return false;

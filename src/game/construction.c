@@ -95,7 +95,13 @@ static bool read_buildings(struct construction *state, const char *p)
                     building.days = positive_integer(value);
                 else if (is(key, "tax_income"))
                     (void)parse_real(value, &building.annual_tax);
-                else if (is(key, "upgrades_from"))
+                else if (!is(value, "{") && value.size) {
+                    char numeric_key[80]; double value_number = 0;
+                    copy_token(numeric_key, sizeof numeric_key, key);
+                    if (parse_real(value, &value_number))
+                        (void)levy_effect_assign(&building.levy, numeric_key, value_number);
+                }
+                if (is(key, "upgrades_from"))
                     copy_token(building.upgrades_from, sizeof building.upgrades_from, value);
                 else if (is(key, "trigger"))
                     building.supported &= is(value, "{") && zero_tech(body);
@@ -175,6 +181,16 @@ static void read_settlement_rules(struct construction *state, const char *root)
     for (int i = HOLDING_CASTLE; modifiers && i < HOLDING_TYPE_COUNT; ++i) {
         const char *tax = modifiers;
         if (is(find(&tax, type_ids[i]), "{")) {
+            const char *scan = tax;
+            for (struct token k; (k = token(&scan)).size && !is(k, "}"); ) {
+                if (!is(token(&scan), "=")) break;
+                struct token v = token(&scan);
+                if (is(v, "{")) { skip_block(&scan); continue; }
+                char name[80]; double amount;
+                copy_token(name, sizeof name, k);
+                if (parse_real(v, &amount))
+                    (void)levy_effect_assign(&state->holding_base_levy[i], name, amount);
+            }
             double value;
             if (parse_real(field(tax, "tax_income"), &value)) {
                 state->holding_base_tax[i] = value;
@@ -523,20 +539,17 @@ static bool replaces(const struct construction *state, size_t later, size_t form
     return false;
 }
 
-bool construction_holding_annual_tax(const struct construction *state,
-                                     const struct holding *holding, double *result)
+static size_t active_buildings(const struct construction *state, const struct holding *holding,
+                               size_t indices[HOLDING_BUILDING_LIMIT + 128])
 {
-    if (!state || !holding || !result || holding->type <= HOLDING_EMPTY ||
-        holding->type >= HOLDING_TYPE_COUNT || !state->holding_base_tax_known[holding->type])
-        return false;
-    size_t indices[HOLDING_BUILDING_LIMIT + 128], n = 0;
+    size_t n = 0;
     for (size_t b = 0; b < holding->building_count; ++b) {
         for (size_t i = 0; i < state->count; ++i) {
             if (state->catalog[i].type != holding->type ||
                 strcmp(state->catalog[i].id, holding->buildings[b])) continue;
             size_t k;
             for (k = 0; k < n && indices[k] != i; ++k) { }
-            if (k == n && n < SDL_arraysize(indices)) indices[n++] = i;
+            if (k == n && n < HOLDING_BUILDING_LIMIT + 128) indices[n++] = i;
             break;
         }
     }
@@ -549,8 +562,19 @@ bool construction_holding_annual_tax(const struct construction *state,
             continue;
         size_t k;
         for (k = 0; k < n && indices[k] != project->index; ++k) { }
-        if (k == n && n < SDL_arraysize(indices)) indices[n++] = project->index;
+        if (k == n && n < HOLDING_BUILDING_LIMIT + 128) indices[n++] = project->index;
     }
+    return n;
+}
+
+bool construction_holding_annual_tax(const struct construction *state,
+                                     const struct holding *holding, double *result)
+{
+    if (!state || !holding || !result || holding->type <= HOLDING_EMPTY ||
+        holding->type >= HOLDING_TYPE_COUNT || !state->holding_base_tax_known[holding->type])
+        return false;
+    size_t indices[HOLDING_BUILDING_LIMIT + 128];
+    const size_t n = active_buildings(state, holding, indices);
     double annual = state->holding_base_tax[holding->type];
     for (size_t k = 0; k < n; ++k) {
         bool upgraded = false;
@@ -562,5 +586,141 @@ bool construction_holding_annual_tax(const struct construction *state,
         if (!upgraded) annual += state->catalog[indices[k]].annual_tax;
     }
     *result = annual < 0 ? 0 : annual;
+    return true;
+}
+
+bool construction_holding_levy(const struct construction *state, const struct holding *holding,
+                              struct levy_potential *result)
+{
+    if (!state || !holding || !result || holding->type <= HOLDING_EMPTY ||
+        holding->type >= HOLDING_TYPE_COUNT || !state->holding_base_tax_known[holding->type])
+        return false;
+    size_t indices[HOLDING_BUILDING_LIMIT + 128];
+    size_t n = active_buildings(state, holding, indices);
+    struct levy_effect sum = state->holding_base_levy[holding->type];
+    for (size_t k = 0; k < n; ++k) {
+        bool upgraded = false;
+        for (size_t j = 0; j < n; ++j)
+            if (k != j && replaces(state, indices[j], indices[k])) {
+                upgraded = true;
+                break;
+            }
+        if (!upgraded)
+            levy_effect_add(&sum, &state->catalog[indices[k]].levy);
+    }
+    *result = levy_potential_calculate(&sum);
+    return true;
+}
+
+/* Serialize authored building IDs rather than the order in the active catalog.
+ * This permits mods to change catalog ordering without corrupting projects. */
+void construction_checkpoint_free(struct construction_checkpoint *checkpoint)
+{
+    if (!checkpoint) return;
+    free(checkpoint->buildings);
+    free(checkpoint->settlements);
+    *checkpoint = (struct construction_checkpoint){0};
+}
+
+static int construction_building_index(const struct construction *state, const char *key)
+{
+    for (size_t i = 0; i < state->count; ++i)
+        if (!strcmp(state->catalog[i].id, key)) return (int)i;
+    return -1;
+}
+
+bool construction_checkpoint_capture(const struct construction *state,
+                                     struct construction_checkpoint *out)
+{
+    if (!state || !out) return false;
+    struct construction_checkpoint copy = {0};
+    if (state->project_count) {
+        copy.buildings = calloc(state->project_count, sizeof *copy.buildings);
+        if (!copy.buildings) return false;
+        copy.building_count = state->project_count;
+        for (size_t i = 0; i < state->project_count; ++i) {
+            const struct building_project *p = &state->projects[i];
+            if (p->index >= state->count) goto failed;
+            snprintf(copy.buildings[i].holding, sizeof copy.buildings[i].holding, "%s", p->holding);
+            snprintf(copy.buildings[i].building, sizeof copy.buildings[i].building,
+                     "%s", state->catalog[p->index].id);
+            copy.buildings[i].days = p->days;
+        }
+    }
+    if (state->settlement_count) {
+        copy.settlements = calloc(state->settlement_count, sizeof *copy.settlements);
+        if (!copy.settlements) goto failed;
+        copy.settlement_count = state->settlement_count;
+        for (size_t i = 0; i < state->settlement_count; ++i) {
+            copy.settlements[i].holding = state->settlements[i].holding;
+            copy.settlements[i].province = state->settlements[i].province;
+            copy.settlements[i].days = state->settlements[i].days;
+        }
+    }
+    *out = copy;
+    return true;
+failed:
+    construction_checkpoint_free(&copy);
+    return false;
+}
+
+bool construction_checkpoint_valid(const struct construction *state,
+                                   const struct construction_checkpoint *copy)
+{
+    if (!state || !copy || copy->building_count > 100000 || copy->settlement_count > 10000 ||
+        (copy->building_count && !copy->buildings) ||
+        (copy->settlement_count && !copy->settlements)) return false;
+    for (size_t i = 0; i < copy->building_count; ++i) {
+        const struct construction_checkpoint_building *entry = copy->buildings + i;
+        if (!entry->holding[0] || !entry->building[0] ||
+            !memchr(entry->holding, 0, sizeof entry->holding) ||
+            !memchr(entry->building, 0, sizeof entry->building) ||
+            construction_building_index(state, entry->building) < 0) return false;
+        for (size_t j = 0; j < i; ++j)
+            if (!strcmp(entry->holding, copy->buildings[j].holding) &&
+                !strcmp(entry->building, copy->buildings[j].building)) return false;
+    }
+    for (size_t i = 0; i < copy->settlement_count; ++i) {
+        const struct construction_checkpoint_settlement *entry = copy->settlements + i;
+        if (!entry->province || !entry->holding.id[0] ||
+            !memchr(entry->holding.id, 0, sizeof entry->holding.id) ||
+            !memchr(entry->holding.name, 0, sizeof entry->holding.name) ||
+            entry->holding.type <= HOLDING_EMPTY || entry->holding.type >= HOLDING_TYPE_COUNT ||
+            entry->holding.building_count > HOLDING_BUILDING_LIMIT) return false;
+        for (size_t j = 0; j < i; ++j)
+            if (!strcmp(entry->holding.id, copy->settlements[j].holding.id)) return false;
+    }
+    return true;
+}
+
+bool construction_checkpoint_restore(struct construction *state,
+                                     const struct construction_checkpoint *copy)
+{
+    if (!construction_checkpoint_valid(state, copy)) return false;
+    struct building_project *projects = NULL;
+    struct settlement_project *settlements = NULL;
+    if (copy->building_count) {
+        projects = calloc(copy->building_count, sizeof *projects);
+        if (!projects) return false;
+        for (size_t i = 0; i < copy->building_count; ++i) {
+            snprintf(projects[i].holding, sizeof projects[i].holding, "%s", copy->buildings[i].holding);
+            projects[i].index = (size_t)construction_building_index(state, copy->buildings[i].building);
+            projects[i].days = copy->buildings[i].days;
+        }
+    }
+    if (copy->settlement_count) {
+        settlements = calloc(copy->settlement_count, sizeof *settlements);
+        if (!settlements) { free(projects); return false; }
+        for (size_t i = 0; i < copy->settlement_count; ++i) {
+            settlements[i].holding = copy->settlements[i].holding;
+            settlements[i].province = copy->settlements[i].province;
+            settlements[i].days = copy->settlements[i].days;
+        }
+    }
+    construction_reset(state);
+    state->projects = projects;
+    state->project_count = copy->building_count;
+    state->settlements = settlements;
+    state->settlement_count = copy->settlement_count;
     return true;
 }

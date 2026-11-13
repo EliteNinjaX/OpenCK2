@@ -21,6 +21,26 @@ static bool append_holding(struct economy_snapshot *economy, const struct holdin
     return true;
 }
 
+static bool append_vassal_holding(struct economy_snapshot *economy,
+                                  const struct holding *holding,unsigned id)
+{
+    if (economy->vassal_count==economy->vassal_capacity) {
+        const size_t cap=economy->vassal_capacity ? economy->vassal_capacity*2 : 32;
+        if (cap<economy->vassal_capacity || cap>SIZE_MAX/sizeof(*economy->vassal_holdings)) return false;
+        void *next=realloc(economy->vassal_holdings,cap*sizeof(*economy->vassal_holdings));
+        if (!next) return false;
+        economy->vassal_holdings=next; economy->vassal_capacity=cap;
+    }
+    struct taxable_vassal_holding *v=&economy->vassal_holdings[economy->vassal_count++];
+    v->holding=*holding; v->holder_id=id;
+    return true;
+}
+static bool known_immediate_vassal(const unsigned *ids, size_t count, unsigned id)
+{
+    for (size_t i=0;i<count;++i) if (ids[i]==id) return true;
+    return false;
+}
+
 bool economy_snapshot_track_county(struct economy_snapshot *economy, unsigned province_id)
 {
     if (!economy || !province_id) return false;
@@ -118,6 +138,17 @@ int economy_snapshot_build(struct economy_snapshot *economy, const char *root,
     SDL_free(defines);
     SDL_free(modifiers);
     calculate_rates(economy, realms, player);
+    /* A baron/county must be demonstrably held by a *direct* vassal;
+     * never count unverified lower-vassal income as player income. */
+    const size_t nv=realm_direct_vassals(realms,player,0,NULL,0);
+    unsigned *vassals=nv && nv<SIZE_MAX/sizeof(unsigned) ? calloc(nv,sizeof(unsigned)):NULL;
+    if (nv && !vassals) { economy_snapshot_free(economy); return -1; }
+    for (size_t start=0;start<nv;start+=64) {
+        struct realm_title_info page[64];
+        (void)realm_direct_vassals(realms,player,start,page,64);
+        const size_t count=nv-start<64 ? nv-start:64;
+        for (size_t k=0;k<count;++k) vassals[start+k]=page[k].holder;
+    }
     for (size_t p = 0; p < provinces->count; ++p) {
         const struct province *province = &provinces->provinces[p];
         if (!province->land) continue;
@@ -133,6 +164,7 @@ int economy_snapshot_build(struct economy_snapshot *economy, const char *root,
          * settlement is known because constructing it required this county. */
         if (player && has_county && county_title.holder == player &&
             !economy_snapshot_track_county(economy, province->id)) {
+            free(vassals);
             economy_snapshot_free(economy);
             return -1;
         }
@@ -150,11 +182,19 @@ int economy_snapshot_build(struct economy_snapshot *economy, const char *root,
                 ++economy->unknown_holders;
             }
             if (holder == player && player && !append_holding(economy, holding)) {
+                free(vassals);
+                economy_snapshot_free(economy);
+                return -1;
+            }
+            if (holder && holder != player && known_immediate_vassal(vassals,nv,holder) &&
+                !append_vassal_holding(economy,holding,holder)) {
+                free(vassals);
                 economy_snapshot_free(economy);
                 return -1;
             }
         }
     }
+    free(vassals);
     economy_snapshot_refresh(economy, construction);
     return 0;
 }
@@ -189,10 +229,29 @@ void economy_snapshot_refresh(struct economy_snapshot *economy, const struct con
     }
 }
 
+void economy_snapshot_apply_laws(struct economy_snapshot *economy,const struct construction *buildings,
+                                 const struct ck2_law_catalog *catalog,const struct ck2_law_state *selected)
+{
+    if (!economy || !buildings) return;
+    economy->annual_law_vassal_tax=0;
+    economy->vassal_tax_skipped=0;
+    for (size_t i=0;i<economy->vassal_count;++i) {
+        const struct holding *holding=&economy->vassal_holdings[i].holding;
+        double rate,annual;
+        if (!ck2_law_holding_tax(selected,catalog,holding->type,&rate) ||
+            !construction_holding_annual_tax(buildings,holding,&annual)) {
+            ++economy->vassal_tax_skipped;
+            continue;
+        }
+        economy->annual_law_vassal_tax+=annual*rate;
+    }
+}
+
 void economy_snapshot_free(struct economy_snapshot *economy)
 {
     if (!economy) return;
     free(economy->direct_holdings);
     free(economy->direct_counties);
+    free(economy->vassal_holdings);
     *economy = (struct economy_snapshot){0};
 }

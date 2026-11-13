@@ -4,6 +4,16 @@ This file consolidates the original game asset/data compatibility guide and the 
 
 The binary's original function addresses, decompilation and recovered source names are maintained exclusively in [`EXE_RESEARCH.md`](EXE_RESEARCH.md). For current code priorities see [`../ROADMAP.md`](../ROADMAP.md).
 
+## Current election-script support
+
+The C engine now indexes `common/succession_voting/*.txt`, including the
+Byzantine elective rule, and links original law `effect/succession` metadata
+to its voting script. The campaign console commands `election` and
+`electioncandidate <ID>` are **diagnostics**, not the vanilla CK2 election
+interface. Scripted offices, votes and eligibility remain incomplete; their
+conditions must not be represented as finished gameplay. See
+[`DEVELOPMENT.md`](DEVELOPMENT.md) for the verified scope.
+
 ## Sections
 
 - Vanilla gameplay mechanics and data relationships
@@ -348,3 +358,68 @@ Remaining: exact shader compositing; emblem sprites/placement; DLC/mod style ove
 - Read original semicolon-delimited `localisation/*.csv` via the same mounted asset path as all other CK2 resources. CSV columns for this implementation: English = 1, French = 2, German = 3, Spanish = 5. Blank selected fields fall back to English. Keep the indexed catalog until language changes; never reopen the files for each text draw.
 - Prefer existing original keys (`SM_LANGUAGE`, `SM_SETTINGS`, `SM_GAME`, `SM_VIDEO`, `SM_AUDIO`, `SM_CONTROLS`, `FAMILYTREE_INTERFACE_LABEL`, `REALM_TREE_INTERFACE_LABEL`, `DYNASTYTREE_INTERFACE_LABEL`, `DYNATREE_HOUSEOF`, `DYNATREE_LIVINGMEMBERS`, `DYNATREE_TOTALMEMBERS`, and character stat `*_MOD`). Unmatched original keys and new engine-only strings need explicit follow-up rather than invented translations.
 - Tree window structures are read from `interface/dynasty_tree.gui` and atlas definitions from `interface/dynasty_tree.gfx`. Relationship source is `history/characters` (dynasty/father/mother/dates) and `history/titles` (realm ownership). The implementation uses the same source-provided dynasty coat-of-arms renderer. The family, dynasty and realm graphs use OpenCK2's own simplified layout: not copied binary C++ algorithms.
+
+
+### Conversion: faiths and cultures (2026-11-12)
+
+The new `conversion_core.c/.h` reads culture/religion keys from the mounted original `common/cultures` and `common/religions` sources and reads the Court Chaplain / Steward job identifiers and referenced events from `common/job_actions/*.txt`. Runtime province effects change the Culture and Religion map overlays, settlement graphic style, and selected province labels. Current ruler effects update the character view's faith/culture fields. Both remain C17.
+
+**Not yet original-CK2 equivalent:** eligibility trigger execution, Catholic/Orthodox province conversion event outcomes, pagan restrictions, neighbor/port restrictions for `action_settle_tribe`, education/opinion/religious tax effects, spontaneous cultural spread, council appointments, per-event MTTH and monthly triggering, dynamic faith groups, autosave/load. Until those are implemented, mission success only occurs through the explicit developer console `resolvefaith` / `resolveculture` actions. These do not claim the original game's success chance or AI behavior. The feature should not silently alter bookmark history files.
+
+### Bloodlines, Great Works and music controls (C17 incremental UI)
+
+- `interface/bloodlines.gui`: `bloodlines_window`, `bloodlines_list`,
+  `close_button` and its `bloodline_entry` template. Symbols and window
+  background originate in `interface/bloodlines.gfx`. Definitions are read from
+  `common/bloodlines/*.txt`. Definition metadata alone **does not** determine
+  which bloodlines a character actually possesses.
+- `interface/wonder.gui`: `wonder_view`, `next_wonder_button`,
+  `previous_wonder_button`. The historical index uses `build_wonder` entries
+  dated at or before the bookmark; opening a work selects the corresponding
+  province and reuses the existing original-style wonder detail renderer.
+- `interface/main.gui`: `main/menu_area/minimap_nextsong` and
+  `interface/main.gfx:GFX_minimap_nextsong`. Music files are dynamically
+  enumerated from mounted `music/`, not embedded or copied into OpenCK2.
+
+### Roman imperial government on the campaign map (2026-11-12)
+
+OpenCK2 now resolves the special government of eligible holders of
+`e_byzantium` and `e_roman_empire` from the *installed*
+`common/governments/feudal_governments.txt` script. The Roman imperial
+color is the authored RGB `143, 12, 125`, and the UI can identify the
+assignment as inferred rather than from an explicit character-history entry.
+The H Governments overlay reads the resulting in-memory ruler type. The
+`government [ruler ID]` console command reports the same provenance.
+
+To verify visually, choose a bookmark with an actual emperor of Byzantium,
+start the campaign, open that ruler's character screen and hover Government,
+then switch to Governments mode (H) and inspect directly held counties. Do
+not infer every Byzantine **vassal's** government from the emperor's; each
+ruler's assignment is distinct. The original `frame_suffix = _romanimperial`
+is parsed, but the complete government-specific visual frame and gameplay
+rights, patrician edge cases, and full potential scripting remain to be wired.
+
+
+### Nomadic, republican and theocratic government classification (2026-11-13)
+
+`common/governments/nomadic_governments.txt`,
+`republic_governments.txt`, and `theocracy_governments.txt` are the sources of
+preferred/allowed holdings, title prefixes, frame suffixes, colors and direct
+rule flags. CK2 has **two** republic definitions: an ordinary city government
+and a merchant republic with a separate patrician/port/tier potential. The
+recreated holding-backed assignment for NOMAD/CITY/TEMPLE is provisional,
+never a substitute for that full script evaluation.
+
+`common/religions/00_religions.txt` defines religious groups and may override
+`female_temple_holders` or `male_temple_holders`. Theocracy inference rejects
+verified Muslim faiths, unavailable religion definitions and incompatible
+holder sex. The map and character views read the resulting in-memory
+`government_key` and prefer the original source color where present.
+
+All original government and religion scripts remain read-only. The C17
+implementation uses source-driven prohibition of founding holdings,
+non-hereditary government safeguards, explicit gender-law prohibitions and
+nomadic vassal tax exemptions only where that information is available. These are partial mechanics. A new C17 government-mechanics layer now keeps
+runtime nomadic clan, patrician, trade-post and bishop-nomination records;
+see `docs/DEVELOPMENT.md` for exact supported commands and provenance.
+They remain prototypes, not native CK2 election, trade-zone or clerical AI.

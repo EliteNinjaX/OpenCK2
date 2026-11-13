@@ -1939,3 +1939,37 @@ Analyzed the supplied `FreeCK2game.exe` (24 MB, Windows PE32+ x86-64), without e
 **Original loose-file corroboration:** `interface/dynasty_tree.gui` defines `DynastyTree`, `FamilyTree`, and `RealmTree`; related sprite metadata is in `interface/dynasty_tree.gfx`. Localization `v2_42.csv` includes `DYNASTYTREE_INTERFACE_LABEL`, `FAMILYTREE_INTERFACE_LABEL`, `REALM_TREE_INTERFACE_LABEL`; other CSV files define house name and member-count text. These identifiers are sufficient to connect the right interface assets and text keys but insufficient to copy CK2's internal layout algorithm.
 
 **OpenCK2 C implementation:** `src/game/tree_history.c` parses CK2 character history; `src/game/tree_view.c` renders a bounded, original-file-backed graph using window/sprite names from loose files. The rules for branch placement, navigation, dynasty prestige, historical members with incomplete dates and recursive realm vassals are **new OpenCK2 implementations/approximations**, not decompiled CK2 functions. The supplied binary was **not executed**. Follow up with Ghidra or disassembly call graphs for `0x14052c222`, `0x140535dcc`, `0x14053a72c` to investigate layout/branch algorithms.
+
+## Province owner-frame reconstruction cross-check (2026-11-12)
+
+The supplied `FreeCK2game.exe` contains the original GUI text identifiers
+`capital_entry` at file offset `0x01081308`, `settlement_entry` at
+`0x01081a98`, and `province_tier_shield3` at `0x010814c0` and
+`0x010815d8`. These are **raw file offsets of strings, not function addresses
+or disassembly-proven renderer entry points**. The dedicated sprite names
+`GFX_province_capitol_owner_frame` and `GFX_province_settlement_owner_frame`
+were not found as literal strings in the executable byte search. This is
+consistent with the GUI referring to sprite definitions by identifiers but
+**does not prove** the game's internal selection algorithm. The concrete
+four-frame atlas metadata is from `interface/province.gfx`, not from the
+binary. OpenCK2 deliberately selects frame zero pending traced runtime
+selection conditions. The code that computes frame rectangles is a clean C17
+implementation based on the loose-file contract, not recovered C++ source.
+
+### Political-map and family-engine follow-up: evidence limits (12 Nov 2026)
+
+A string-only recheck of the provided `FreeCK2game.exe` identifies the original
+engine/script identifiers `arrange_marriage`, `ARRANGE_MARRIAGE`, `on_marriage`,
+`matrilineal_marriages`, `MARRIAGE_AI_PRESTIGE_VALUE`, `AGE_OF_MARRIAGE_MALE`,
+`AGE_OF_MARRIAGE_FEMALE`, `MAX_CHILD_BIRTH_AGE`, `FERTILITY_BASE_MULT`,
+`BASE_FERTILITY`, and `PRESTIGE_FROM_DYNASTY_ON_MARRIAGE_DIV`.
+
+**Evidence level: embedded strings, not traced C++ control flow.** These
+identifiers support prioritizing marriage, birth, fertility and dynasty
+prestige as separate subsystems. They do not disclose the original
+conception probability, birth sequence, partner selection or shader code.
+CK2 numeric age and birth-wait rules are instead grounded directly in the
+supplied `common/defines.lua`. The currently implemented C gameplay
+algorithms and political border composition are independent reconstructions,
+not a translation of recovered C++ method bodies. Continue with binary
+cross-references and original-game comparisons before claiming parity.

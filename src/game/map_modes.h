@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 /* Identifiers and shortcuts from interface/main.gui, not guessed enum values
- * from the executable. The renderer currently supports only terrain/realms. */
+ * from the executable. Nine historical-data modes now have color overlays; others still need simulation. */
 enum map_mode_id {
     MAP_MODE_TERRAIN, MAP_MODE_REALMS, MAP_MODE_DIPLOMACY, MAP_MODE_RELIGION,
     MAP_MODE_CULTURE, MAP_MODE_ECONOMY, MAP_MODE_DUCHIES, MAP_MODE_KINGDOMS,

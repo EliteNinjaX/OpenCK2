@@ -108,6 +108,11 @@ static bool load_text(ck2_bloodline_registry *r, const char *text)
         if (!insert_type(r, &item)) { free_type(&item); return false; }
     }
 }
+bool ck2_bloodlines_parse_text(ck2_bloodline_registry *r, const char *text)
+{
+    return r && text && load_text(r, text);
+}
+
 bool ck2_bloodlines_load(ck2_bloodline_registry *r, const char *root)
 {
     if (!r || !root) return false;

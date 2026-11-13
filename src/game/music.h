@@ -4,6 +4,7 @@
 #include <SDL.h>
 #include <SDL_mixer.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 enum menu_cue {
     CUE_MENU, CUE_BOOKMARK, CUE_CHARACTER, CUE_CLICK, CUE_GENERIC, CUE_PLAY, CUE_QUIT,
@@ -13,11 +14,14 @@ enum menu_cue {
 
 struct menu_music {
     Mix_Music *track;
+    char **song_names;
+    size_t song_count, next_song_index;
     Mix_Chunk *cues[CUE_COUNT];
     int country_cue;
     bool audio_initialized, mixer_initialized, device_open;
 };
 
+bool menu_music_next(struct menu_music *, const char *asset_root);
 void menu_music_start(struct menu_music *music, const char *asset_root);
 void menu_music_set_volume(const struct menu_music *music, int master, int track, int effects);
 void menu_sound_play(struct menu_music *, enum menu_cue);

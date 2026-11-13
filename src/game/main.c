@@ -14,23 +14,41 @@
 #include "holdings.h"
 #include "character_view.h"
 #include "tree_view.h"
+#include "bloodline_view.h"
+#include "wonder_navigation_core.h"
 #include "ck2_script.h"
 #include "construction.h"
 #include "map_view.h"
 #include "map_interaction.h"
 #include "map_modes.h"
+#include "map_themes.h"
 #include "campaign_hud.h"
 #include "map_settlements.h"
 #include "province_layout_core.h"
+#include "sprite_frame_core.h"
+#include "religion_style_cache.h"
 #include "religion_gfx_core.h"
 #include "economy.h"
 #include "technology_view.h"
 #include "debug_console.h"
+#include "family_gameplay.h"
+#include "family_names_core.h"
+#include "conversion_core.h"
+#include "event_core.h"
+#include "warfare_core.h"
+#include "warfare_map.h"
+#include "law_core.h"
+#include "election_core.h"
+#include "checkpoint_core.h"
+#include "government_mechanics_core.h"
+#include "map_positions.h"
+#include <math.h>
 
 #include <SDL_image.h>
 #include <errno.h>
 #include <ctype.h>
 #include <limits.h>
+#include <stdint.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <sys/wait.h>
@@ -125,7 +143,10 @@ struct vassal_art {
 };
 
 struct wonder_panel {
-    struct setup_widget button, background, close, terrain, frame, image, completed;
+    struct setup_widget button, background, close, terrain, frame, image, completed, next, previous;
+    unsigned *locations; /* Historical province IDs containing constructed works. */
+    size_t location_count, location_capacity;
+    bool catalog_ready;
     SDL_Rect name_area, description_area, image_area, completed_area;
     char id[64], name[96], description[1024];
     char completed_label[64], upgrades[12][72], upgrade_names[12][96];
@@ -178,11 +199,12 @@ struct menu {
     enum screen rules_back;
     struct campaign_date start_date;
     const struct era_ruler *campaign_ruler;
-    unsigned home_province, setup_province, campaign_ruler_id;
+    unsigned home_province, setup_province, campaign_ruler_id, campaign_start_ruler_id;
     char setup_title[72];
     const struct menu_assets *assets;
     struct character_view character;
     struct tree_view genealogy;
+    struct bloodline_view bloodlines;
     struct wonder_panel wonder;
     struct setup_widget topbar[14];
     SDL_Rect topbar_values[8];
@@ -193,6 +215,12 @@ struct menu {
     struct county_holdings holdings;
     struct construction construction;
     struct economy_snapshot economy;
+    struct ck2_law_catalog law_catalog;
+    struct ck2_election_catalog election_catalog;
+    struct ck2_government_rules government_rules;
+    struct ck2_trade_catalog trade_catalog;
+    struct ck2_government_mechanics government_mechanics;
+    struct ck2_law_state active_laws;
     SDL_Texture *building_bg, *building_row, *building_close, *settlement_bg;
     SDL_Texture *settlement_build, *settlement_hover;
     char settlement_headline[64], settlement_build_label[32], settlement_types[3][32];
@@ -214,19 +242,29 @@ struct menu {
     struct province_panel_skin province_skin;
     SDL_Rect holding_art_area[2], holding_frame_area[2], holding_owner_frame_area[2];
     bool holding_owner_frame_valid[2];
-    SDL_Texture *holding_owner_frame_texture;
+    struct setup_widget holding_owner_frames[2];
     SDL_Texture *styled_holding_art[HOLDING_TYPE_COUNT];
     SDL_Texture *styled_holding_frame, *styled_holding_capital;
     char holding_style_key[160];
+    struct religion_style_cache religion_styles;
     float holding_art_scale[2];
     bool holding_layout_ready;
     unsigned holding_province;
     struct map_gesture map_gesture;
     struct map_mode_state map_modes;
+    struct map_theme map_theme;
     struct map_settlement_scene settlement_scene;
     struct campaign_hud_ui hud_ui;
     struct technology_view technology;
     struct debug_console console;
+    struct ck2_event pending_event;
+    bool event_open;
+    unsigned event_target_id;
+    struct family_gameplay family;
+    struct warfare_state warfare;
+    struct warfare_graph warfare_graph;
+    struct conversion_state conversion;
+    struct conversion_catalog conversion_catalog;
     bool realms_visible, campaign_active;
     SDL_Point pointer;
     struct campaign campaign;
@@ -250,7 +288,8 @@ struct menu {
 /* Map events must never pass through a visible panel or a map-mode button. */
 static bool campaign_map_interactive(const struct menu *menu, SDL_Point point)
 {
-    if (!campaign_map_area(point))
+    if (!campaign_map_area(point) ||
+        campaign_hud_ui_next_song_hit(&menu->hud_ui, point))
         return false;
     if (menu->selected && !menu->character.open &&
         point.x >= menu->holding_panel.x &&
@@ -502,6 +541,70 @@ static void format_campaign_date(char *buffer, size_t size, struct campaign_date
     snprintf(buffer, size, "%d %s %d", date.day, months[date.month - 1], date.year);
 }
 
+/* Developer-fired events use the CK2 localisation catalog, but not yet the
+ * original event shader, chained scripted effects, or automatic triggers. */
+static SDL_Rect scripted_option_rect(size_t index)
+{
+    return (SDL_Rect){484, 487 + (int)index * 35, 632, 32};
+}
+static void scripted_wrapped_text(SDL_Renderer *renderer, const struct menu_assets *assets,
+                                  const char *text, int center, int y, size_t max_lines)
+{
+    const unsigned char *p = (const unsigned char *)text;
+    char line[100];
+    size_t row=0;
+    while (*p && row < max_lines) {
+        size_t used=0, last_space=0;
+        while (p[used] && p[used]!='\n' && used < 86) {
+            if (p[used]==' ') last_space=used;
+            ++used;
+        }
+        size_t length=used;
+        if (used==86 && p[used] && last_space>0) length=last_space;
+        if (length >= sizeof line) length=sizeof line-1;
+        memcpy(line,p,length); line[length]=0;
+        campaign_text(renderer,assets,line,center,y+(int)row*25);
+        p+=length;
+        while (*p==' ' || *p=='\n') ++p;
+        ++row;
+    }
+}
+static void draw_scripted_event(SDL_Renderer *renderer, const struct menu_assets *assets,
+                                 const struct menu *menu)
+{
+    if (!menu->event_open) return;
+    SDL_Rect frame = {413,160,774,658};
+    SDL_SetRenderDrawBlendMode(renderer,SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer,3,5,8,228);
+    SDL_RenderFillRect(renderer,&frame);
+    SDL_SetRenderDrawColor(renderer,198,170,111,255);
+    SDL_RenderDrawRect(renderer,&frame);
+    SDL_SetRenderDrawBlendMode(renderer,SDL_BLENDMODE_NONE);
+    const struct ck2_event *e=&menu->pending_event;
+    const char *title=ck2_localize(e->title,e->title);
+    if (!strcmp(title,e->title)) title=e->id;
+    scripted_wrapped_text(renderer,assets,title,800,195,2);
+    const char *desc=ck2_localize(e->description,e->description);
+    scripted_wrapped_text(renderer,assets,desc,800,274,7);
+    if (e->has_immediate || e->has_trigger || e->conditional_description)
+        campaign_text(renderer,assets,"Console-fired: event triggers and scripted immediate effects bypassed",800,458);
+    if (e->option_count == 0) campaign_text(renderer,assets,"No supported option entries; Esc closes",800,525);
+    for (size_t i=0;i<e->option_count;i++) {
+        SDL_Rect area=scripted_option_rect(i);
+        SDL_SetRenderDrawColor(renderer,39,35,32,255);
+        SDL_RenderFillRect(renderer,&area);
+        SDL_SetRenderDrawColor(renderer,153,121,74,255);
+        SDL_RenderDrawRect(renderer,&area);
+        const char *label=e->options[i].name[0] ?
+            ck2_localize(e->options[i].name,e->options[i].name) : "Unnamed option";
+        char message[164];
+        snprintf(message,sizeof message,"%zu. %.135s%s",i+1,label,
+            e->options[i].ignored_effects || e->options[i].conditional ? " *" : "");
+        campaign_text(renderer,assets,message,800,area.y+6);
+    }
+    campaign_text(renderer,assets,"Click an option or use ` eventchoose 1    |    Esc to close",800,783);
+}
+
 static void draw_debug_console(SDL_Renderer *renderer, const struct menu_assets *assets,
                                const struct debug_console *console)
 {
@@ -634,9 +737,12 @@ static bool load_wonder_view(struct menu *menu)
             frontend_gui_rect(&gui, frontend_gui_find(&gui, panel, "wonder_name"), viewport, &wonder->name_area) &&
             frontend_gui_rect(&gui, frontend_gui_find(&gui, panel, "wonder_description"), viewport, &wonder->description_area) &&
             frontend_gui_rect(&gui, frontend_gui_find(&gui, panel, "wonder_image"), viewport, &wonder->image_area);
+        /* Optional navigation defined by the original wonder.gui. */
+        (void)bind_wonder_widget(menu, &gui, panel, "next_wonder_button", &wonder->next);
+        (void)bind_wonder_widget(menu, &gui, panel, "previous_wonder_button", &wonder->previous);
         frontend_gui_free(&gui);
         if (!ok) {
-            struct setup_widget *parts[] = {&wonder->background, &wonder->close, &wonder->terrain, &wonder->frame, &wonder->completed};
+            struct setup_widget *parts[] = {&wonder->background, &wonder->close, &wonder->terrain, &wonder->frame, &wonder->completed, &wonder->next, &wonder->previous};
             for (size_t i = 0; i < SDL_arraysize(parts); ++i) {
                 SDL_DestroyTexture(parts[i]->texture);
                 *parts[i] = (struct setup_widget){0};
@@ -697,6 +803,8 @@ static void draw_wonder(SDL_Renderer *renderer, const struct menu_assets *assets
     SDL_RenderCopy(renderer, image->texture, &source, &image->area);
     setup_widget_draw(&wonder->frame, renderer, menu->pointer);
     setup_widget_draw(&wonder->close, renderer, menu->pointer);
+    if (wonder->next.texture) setup_widget_draw(&wonder->next, renderer, menu->pointer);
+    if (wonder->previous.texture) setup_widget_draw(&wonder->previous, renderer, menu->pointer);
     setup_widget_draw(&wonder->completed, renderer, wonder->completed.area.w > 0
                       ? (SDL_Point){wonder->completed.area.x, wonder->completed.area.y} : menu->pointer);
     const SDL_Rect tab = wonder->completed_area;
@@ -714,6 +822,45 @@ static void draw_wonder(SDL_Renderer *renderer, const struct menu_assets *assets
     snprintf(status, sizeof status, "Stage %u%s", wonder->stage, wonder->damaged ? "  |  Damaged" : "");
     campaign_text(renderer, assets, status, wonder->name_area.x + wonder->name_area.w / 2,
                   wonder->description_area.y + wonder->description_area.h + 34);
+}
+
+/* This list describes built Great Works at the loaded bookmark date. It
+ * deliberately does not invent construction or ownership state beyond history. */
+static void wonder_catalog_build(struct menu *menu)
+{
+    struct wonder_panel *wonder = &menu->wonder;
+    if (wonder->catalog_ready) return;
+    wonder->catalog_ready = true;
+    for (size_t i = 0; i < menu->provinces.count; ++i) {
+        const struct province *province = &menu->provinces.provinces[i];
+        if (!province->land || !province->history_path) continue;
+        char *history = province_history_read(province, menu->asset_root);
+        if (!history) continue;
+        if (strstr(history, "build_wonder")) {
+            struct wonder_panel found = {0};
+            read_wonder(&found, history, menu->start_date);
+            if (found.id[0]) {
+                if (wonder->location_count == wonder->location_capacity) {
+                    size_t next_capacity = wonder->location_capacity ? wonder->location_capacity * 2 : 32;
+                    if (next_capacity > SIZE_MAX / sizeof *wonder->locations) {
+                        SDL_free(history);
+                        break;
+                    }
+                    unsigned *next = realloc(wonder->locations, next_capacity * sizeof *next);
+                    if (!next) {
+                        SDL_free(history);
+                        break;
+                    }
+                    wonder->locations = next;
+                    wonder->location_capacity = next_capacity;
+                }
+                wonder->locations[wonder->location_count++] = province->id;
+            }
+        }
+        SDL_free(history);
+    }
+    SDL_Log("Historical Great Works: %zu constructed provinces at bookmark date",
+            wonder->location_count);
 }
 
 /* Return GUI coordinates as SDL rectangles but distinguish widget-local
@@ -842,12 +989,18 @@ static int load_holding_layout(struct menu *menu, SDL_Texture *background)
     }
     if (valid)
         bind_wonder_widget(menu, &gui, panel, "open_wonder_view", &menu->wonder.button);
-    struct setup_widget owner = {0};
-    if (setup_widget_load_sprite(&owner, menu->renderer, menu->asset_root,
-             "interface/province.gfx", "GFX_province_settlement_owner_frame",
-             (SDL_Rect){0}) == 0)
-        menu->holding_owner_frame_texture = owner.texture;
-    else SDL_ClearError();
+    /* Capital and ordinary settlement owner frames are distinct four-frame
+     * CK2 sprite sheets. Retain frames and frame width; copying the entire
+     * texture produces the large overlapping black/color blocks. */
+    static const char *const owner_sprites[2] = {
+        "GFX_province_capitol_owner_frame", "GFX_province_settlement_owner_frame"
+    };
+    for (size_t i = 0; i < SDL_arraysize(owner_sprites); ++i) {
+        if (setup_widget_load_sprite(&menu->holding_owner_frames[i], menu->renderer,
+              menu->asset_root, "interface/province.gfx", owner_sprites[i],
+              (SDL_Rect){0}) < 0)
+            SDL_ClearError();
+    }
     frontend_gui_free(&gui);
     if (!valid) return SDL_SetError("interface/province.gui: missing campaign holding layout");
     /* capital_position is an independent positionType: it has no province
@@ -886,6 +1039,17 @@ static bool holding_origin(const struct menu *menu, size_t index, SDL_Rect *orig
     return true;
 }
 
+/* Drawing, tooltip hit tests, and building-click hit tests must agree on the
+ * same rectangle, including the culture-specific frame if one was loaded. */
+static SDL_Rect holding_frame_rect(const struct menu *menu, size_t index, SDL_Rect origin)
+{
+    SDL_Texture *frame = index ?
+        (menu->styled_holding_frame ? menu->styled_holding_frame : menu->assets->holding_frame) :
+        (menu->styled_holding_capital ? menu->styled_holding_capital : menu->assets->holding_capital);
+    return frame ? place_holding_texture(frame, origin, menu->holding_frame_area[index != 0], 1)
+                 : (SDL_Rect){0};
+}
+
 
 static void clear_holding_style(struct menu *menu)
 {
@@ -906,13 +1070,9 @@ static void refresh_holding_style(struct menu *menu)
                                                    menu->selected ? menu->selected->id : 0);
     const char *style = marker && marker->graphical[0] ? marker->graphical : "westerngfx";
     const char *religion = menu->holdings.religion_key;
-    char style_key[160];
-    SDL_snprintf(style_key,sizeof style_key,"%s|%s",style,religion);
-    if (!strcmp(style_key,menu->holding_style_key)) return;
-    clear_holding_style(menu);
-    SDL_strlcpy(menu->holding_style_key,style_key,sizeof menu->holding_style_key);
     char religious_graphic[64] = "westerngfx";
-    if (*religion) {
+    if (*religion && !religion_style_cache_get(&menu->religion_styles, religion,
+                                                religious_graphic, sizeof religious_graphic)) {
         struct ck2_asset_files files = ck2_list_assets(menu->asset_root,"common/religions");
         for (size_t k=0; k<files.count; ++k) {
             const char *file=files.names[k];
@@ -927,7 +1087,15 @@ static void refresh_holding_style(struct menu *menu)
             }
         }
         ck2_free_asset_files(&files);
+        religion_style_cache_put(&menu->religion_styles, religion, religious_graphic);
     }
+    /* The image depends on graphical style, not religion ID. Catholic and
+     * Orthodox provinces can reuse the same temple sprite without a reload. */
+    char style_key[160];
+    SDL_snprintf(style_key,sizeof style_key,"%s|%s",style,religious_graphic);
+    if (!strcmp(style_key,menu->holding_style_key)) return;
+    clear_holding_style(menu);
+    SDL_strlcpy(menu->holding_style_key,style_key,sizeof menu->holding_style_key);
     static const char *const names[HOLDING_TYPE_COUNT] = {
         NULL, "GFX_settlement_castle", "GFX_settlement_city", NULL,
         "GFX_settlement_tribal", "GFX_settlement_nomad"
@@ -1014,15 +1182,24 @@ static void draw_campaign_holdings(SDL_Renderer *renderer, const struct menu_ass
         SDL_Texture *art = menu->styled_holding_art[kind] ?
                            menu->styled_holding_art[kind] : assets->holding_art[kind];
         if (!frame) continue;
-        const SDL_Rect frame_rect = place_holding_texture(frame, origin, menu->holding_frame_area[template], 1);
+        const SDL_Rect frame_rect = holding_frame_rect(menu, i, origin);
         SDL_RenderCopy(renderer, frame, NULL, &frame_rect);
-        /* This is a backdrop, not an outline: it MUST render before the
-         * painting. The old order covered every populated holding with an
-         * opaque black owner frame; empty slots alone remained visible. */
-        if (slot && menu->holding_owner_frame_texture && menu->holding_owner_frame_valid[template]) {
-            const SDL_Rect owner = place_holding_texture(menu->holding_owner_frame_texture,
-                      origin, menu->holding_owner_frame_area[template], 1);
-            SDL_RenderCopy(renderer, menu->holding_owner_frame_texture, NULL, &owner);
+        /* Render only ONE of the four original CK2 owner-frame sprite cells.
+         * The frame is a backdrop; it belongs underneath settlement artwork.
+         * CK2's exact color/state selection is still being investigated, so
+         * use frame zero instead of inventing an ownership state. */
+        const struct setup_widget *owner_frame = &menu->holding_owner_frames[template];
+        if (slot && owner_frame->texture && menu->holding_owner_frame_valid[template]) {
+            int sheet_w = 0, sheet_h = 0;
+            struct ck2_frame_rect cell;
+            if (SDL_QueryTexture(owner_frame->texture, NULL, NULL, &sheet_w, &sheet_h) == 0 &&
+                ck2_sprite_frame_rect(sheet_w, sheet_h, owner_frame->frames, 0, &cell)) {
+                const SDL_Rect source = {cell.x, cell.y, cell.w, cell.h};
+                const SDL_Rect target = {origin.x + menu->holding_owner_frame_area[template].x,
+                    origin.y + menu->holding_owner_frame_area[template].y,
+                    source.w, source.h};
+                SDL_RenderCopy(renderer, owner_frame->texture, &source, &target);
+            }
         }
         if (art) {
             const SDL_Rect art_rect = place_holding_texture(art, origin,
@@ -1170,6 +1347,14 @@ static bool can_build_at(const struct menu *menu, const struct holding *holding)
     return menu->building_slot == 0 && owns_county(menu, &title);
 }
 
+static bool government_player_can_found(const struct menu *menu)
+{
+    const struct ruler_profile *r=realm_ruler(&menu->realms,menu->campaign_ruler_id);
+    const struct government_definition *gov=r ? government_find(
+        &menu->settlement_scene.governments,r->government_key) : NULL;
+    return government_can_found_holding(gov);
+}
+
 static bool settlement_candidate(const struct menu *menu, struct realm_title_info *barony)
 {
     struct realm_title_info county;
@@ -1205,6 +1390,11 @@ static void draw_settlement(SDL_Renderer *renderer, const struct menu_assets *as
     if (remaining) {
         snprintf(line, sizeof line, "%.96s: %u days left", pending->name, remaining);
         campaign_text(renderer, assets, line, title.x + title.w / 2, menu->settlement_list.y + 24);
+        return;
+    }
+    if (!government_player_can_found(menu)) {
+        campaign_text(renderer, assets, "Your CK2 government cannot found new holdings",
+                      title.x + title.w / 2, menu->settlement_list.y + 24);
         return;
     }
     struct realm_title_info barony;
@@ -1348,7 +1538,7 @@ static bool building_click(struct menu *menu, SDL_Point point)
         }
         if (SDL_PointInRect(&point, &menu->settlement_panel)) {
             struct realm_title_info barony;
-            if (!settlement_candidate(menu, &barony))
+            if (!government_player_can_found(menu) || !settlement_candidate(menu, &barony))
                 return true;
             for (enum holding_type type = HOLDING_CASTLE; type <= HOLDING_TEMPLE; ++type) {
                 const SDL_Rect button = settlement_build_area(menu, type);
@@ -1393,10 +1583,8 @@ static bool building_click(struct menu *menu, SDL_Point point)
         SDL_Rect origin;
         if (!holding_origin(menu, i, &origin))
             break;
-        SDL_Texture *frame = i ? menu->assets->holding_frame : menu->assets->holding_capital;
-        if (!frame) continue;
-        const SDL_Rect area = place_holding_texture(frame, origin, menu->holding_frame_area[i != 0], 1);
-        if (SDL_PointInRect(&point, &area)) {
+        const SDL_Rect area = holding_frame_rect(menu, i, origin);
+        if (area.w > 0 && SDL_PointInRect(&point, &area)) {
             menu->building_slot = i;
             menu->building_open = true;
             menu->building_scroll = 0;
@@ -1407,18 +1595,160 @@ static bool building_click(struct menu *menu, SDL_Point point)
     return false;
 }
 
+/* Warfare uses the INDEPENDENT political ruler as each side's identity.
+ * County/barony ownership remains a separate historical title relationship. */
+static unsigned campaign_warfare_owner(void *userdata, unsigned province_id)
+{
+    const struct menu *menu = userdata;
+    const struct province *p = province_by_id(&menu->provinces, province_id);
+    if (!p) return 0;
+    struct realm_province_ownership ownership;
+    if (!realm_province_ownership(&menu->realms,
+                                  (size_t)(p - menu->provinces.provinces), &ownership)) return 0;
+    return ownership.has_independent ? ownership.independent.holder : 0;
+}
+static void campaign_warfare_day(struct menu *menu)
+{
+    if (!menu->warfare.war_count && !menu->warfare.army_count) return;
+    struct warfare_day_report report;
+    warfare_day(&menu->warfare, campaign_warfare_owner, menu, &report);
+    for (size_t i = 0; i < report.count; ++i) {
+        const struct warfare_event *e = report.events + i;
+        char line[220];
+        switch (e->kind) {
+        case WARFARE_ARRIVED:
+            snprintf(line, sizeof line, "Army %u arrived in province %u", e->army_id, e->province_id);
+            break;
+        case WARFARE_BATTLE:
+            snprintf(line, sizeof line, "Battle at %u: ruler %u defeated ruler %u; casualties %u/%u",
+                     e->province_id, e->actor_id, e->opponent_id,
+                     e->actor_losses, e->opponent_losses);
+            break;
+        case WARFARE_SIEGE_STARTED:
+            snprintf(line, sizeof line, "Siege begun in province %u (provisional 30 days)", e->province_id);
+            break;
+        case WARFARE_OCCUPIED:
+            snprintf(line, sizeof line, "Province %u occupied by ruler %u (no title transfer)",
+                     e->province_id, e->actor_id);
+            break;
+        case WARFARE_ARMY_DESTROYED:
+            snprintf(line, sizeof line, "Army %u destroyed", e->army_id);
+            break;
+        default: continue;
+        }
+        debug_console_output(&menu->console, line);
+    }
+}
+
+static void name_runtime_newborn(struct menu *menu, unsigned newborn)
+{
+    const struct ruler_profile *child = family_gameplay_find(&menu->family, newborn);
+    if (child && child->culture_key[0]) {
+        const char *directory = "common/cultures";
+        struct ck2_asset_files files = ck2_list_assets(menu->asset_root, directory);
+        for (size_t i = 0; i < files.count; ++i) {
+            const char *file = files.names[i];
+            const size_t len = strlen(file);
+            if (len < 4 || strcmp(file + len - 4, ".txt")) continue;
+            char *data = load_from_directory(menu->asset_root, directory, file);
+            if (!data) continue;
+            char name[96];
+            const bool named = family_name_choose(data, child->culture_key, child->female,
+                                                   newborn ^ child->father, name, sizeof name);
+            SDL_free(data);
+            if (named) {
+                (void)family_gameplay_name_child(&menu->family, newborn, name);
+                break;
+            }
+        }
+        ck2_free_asset_files(&files);
+    }
+}
+
+static void refresh_law_income(struct menu *menu)
+{
+    economy_snapshot_apply_laws(&menu->economy,&menu->construction,
+                                &menu->law_catalog,&menu->active_laws);
+    /* Respect `no_vassal_tax` lists in original common/governments. In
+     * particular, nomad lieges do not collect ordinary nomad-vassal taxes.
+     * Do not change other vassals until their obligations are implemented. */
+    const struct ruler_profile *tax_liege=realm_ruler(&menu->realms,menu->campaign_ruler_id);
+    const struct government_definition *liege_gov=tax_liege ? government_find(
+        &menu->settlement_scene.governments,tax_liege->government_key) : NULL;
+    if (liege_gov && liege_gov->no_vassal_tax.count)
+        for (size_t i=0;i<menu->economy.vassal_count;++i) {
+            const struct taxable_vassal_holding *v=menu->economy.vassal_holdings+i;
+            const struct ruler_profile *vassal=realm_ruler(&menu->realms,v->holder_id);
+            const struct government_definition *type=vassal ? government_find(
+                &menu->settlement_scene.governments,vassal->government_key) : NULL;
+            if (!government_vassal_tax_exempt(liege_gov,type)) continue;
+            double annual,rate;
+            if (ck2_law_holding_tax(&menu->active_laws,&menu->law_catalog,
+                                   v->holding.type,&rate) &&
+                construction_holding_annual_tax(&menu->construction,&v->holding,&annual))
+                menu->economy.annual_law_vassal_tax-=annual*rate;
+        }
+    if (menu->economy.annual_law_vassal_tax<0)
+        menu->economy.annual_law_vassal_tax=0;
+    menu->campaign.monthly_tax=ck2_tax_monthly(menu->economy.annual_direct_tax+
+                                                menu->economy.annual_law_vassal_tax);
+    /* Source-defined nomad population tax is monthly. Only apply it to a
+     * registered player clan: the initial unverified population is UNKNOWN. */
+    menu->campaign.monthly_tax+=ck2_nomad_monthly_tax(&menu->government_mechanics,
+                                              &menu->government_rules,menu->campaign_ruler_id);
+    /* CK2 trade-post buildings contain explicit annual tax_income modifiers.
+     * Trade *value* and trade-zone calculations are not equivalent to income. */
+    for (size_t post=0;post<menu->government_mechanics.post_count;++post) {
+        const struct ck2_trade_post *p=menu->government_mechanics.posts+post;
+        if (p->patrician==menu->campaign_ruler_id)
+            menu->campaign.monthly_tax+=ck2_trade_annual_tax(p,&menu->trade_catalog)/12.0;
+    }
+    menu->campaign.monthly_tax_known=menu->economy.missing_tax_definitions==0 &&
+                                     menu->economy.vassal_tax_skipped==0;
+    menu->campaign.demesne_limit=menu->economy.demesne_limit;
+    menu->campaign.demesne_limit_known=menu->economy.has_demesne_limit;
+    const struct ck2_law *centralization=ck2_law_selected(&menu->active_laws,
+                                  &menu->law_catalog,"centralization");
+    if (centralization && centralization->has_demesne_size &&
+        menu->economy.has_demesne_limit) {
+        const double limit=(double)menu->economy.demesne_limit+centralization->demesne_size;
+        menu->campaign.demesne_limit=limit<=0 ? 0 : limit>=UINT_MAX ? UINT_MAX : (unsigned)limit;
+    }
+}
+
 static void advance_campaign_day(struct menu *menu)
 {
     const bool just_completed = construction_day(&menu->construction);
+    if (just_completed && menu->map_modes.selected == MAP_MODE_ECONOMY)
+        map_theme_free(&menu->map_theme);
     /* Recalculate immediately when construction finishes, not only near
      * month end; the monthly receipt still happens at the month boundary. */
     if (just_completed || menu->campaign.date.day >= 28) {
         economy_snapshot_refresh(&menu->economy, &menu->construction);
-        menu->campaign.monthly_tax = ck2_tax_monthly(menu->economy.annual_direct_tax);
-        menu->campaign.monthly_tax_known = menu->economy.missing_tax_definitions == 0;
+        refresh_law_income(menu);
         menu->campaign.demesne_count = menu->economy.direct_count;
     }
+    const int previous_month=menu->campaign.date.month;
+    const int previous_year=menu->campaign.date.year;
     campaign_advance_day(&menu->campaign);
+    ck2_trade_day(&menu->government_mechanics);
+    if (menu->campaign.date.month!=previous_month || menu->campaign.date.year!=previous_year) {
+        ck2_nomad_month(&menu->government_mechanics,&menu->government_rules);
+        refresh_law_income(menu);
+    }
+    campaign_warfare_day(menu);
+    /* Several pregnancies can finish on the same date. Process each without
+     * arbitrarily delaying later births until tomorrow. */
+    for (unsigned delivered = 0; delivered < 64; ++delivered) {
+        const unsigned newborn = family_gameplay_day(&menu->family, menu->campaign.date);
+        if (!newborn) break;
+        name_runtime_newborn(menu, newborn);
+        char message[160];
+        snprintf(message, sizeof message, "Birth: new child ID %u (runtime family history)", newborn);
+        debug_console_output(&menu->console, message);
+        /* Rebuild the open family panel on its next inspection. */
+        menu->character.ruler.id = 0;
+    }
     if (menu->selected)
         construction_settlement_apply(&menu->construction, menu->selected->id, &menu->holdings);
 }
@@ -1562,9 +1892,9 @@ static void draw_topbar_tooltip(SDL_Renderer *renderer, const struct menu_assets
             const size_t used = strlen(details);
             if (i == 0)
                 snprintf(details + used, sizeof details - used,
-                         "\nDirect holding tax: %.2f gold/month\n"
-                         "Vassal taxes, laws and modifiers not yet included%s",
-                         menu->campaign.monthly_tax,
+                         "\nDirect %.2f + modeled vassal %.2f gold/year\n"
+                         "Incomplete: other obligations, taxes, exemptions and modifiers%s",
+                         menu->economy.annual_direct_tax,menu->economy.annual_law_vassal_tax,
                          menu->economy.holder_fallbacks ? "\nSome capital holders are inferred" : "");
             else if (i == 1)
                 snprintf(details + used, sizeof details - used,
@@ -1575,7 +1905,7 @@ static void draw_topbar_tooltip(SDL_Renderer *renderer, const struct menu_assets
             else if (i == 3)
                 snprintf(details + used, sizeof details - used,
                          "\nCounted personal holdings: %zu\n"
-                         "Limit excludes unmodeled laws/traits/game rules",
+                         "Limit includes selected centralization, excludes traits and game rules",
                          menu->campaign.demesne_count);
             panel_tooltip(renderer, assets, menu->pointer, menu->topbar_labels[i],
                           details, centered_text);
@@ -1742,7 +2072,10 @@ static void holding_tooltip(SDL_Renderer *renderer, const struct menu_assets *as
         m->holding_id, m->culture[0] ? m->culture : "Not recorded",
         m->religion[0] ? m->religion : "Not recorded",
         m->actor_known ? m->actor : "No matching defined model",
-        government, authored ? " (authored character history)" :
+        government, authored ? (ruler->government_inferred ?
+            (!strcmp(ruler->government_key,"roman_imperial_government") ?
+                " (CK2 imperial potential)" : " (holding-backed, provisional)") :
+                " (authored character history)") :
                     count == 1 ? " (candidate only)" : "");
     panel_tooltip(renderer, assets, menu->pointer, heading, info, centered_text);
 }
@@ -1756,11 +2089,9 @@ static const struct holding *hovered_panel_holding(const struct menu *menu)
     for (size_t i = 0; i < menu->holdings.count; ++i) {
         SDL_Rect origin;
         if (!holding_origin(menu, i, &origin)) continue;
-        SDL_Texture *frame = i ? menu->assets->holding_frame : menu->assets->holding_capital;
-        if (!frame) continue;
-        const SDL_Rect bounds = place_holding_texture(frame, origin,
-            menu->holding_frame_area[i != 0], 1);
-        if (SDL_PointInRect(&menu->pointer, &bounds)) return menu->holdings.slots + i;
+        const SDL_Rect bounds = holding_frame_rect(menu, i, origin);
+        if (bounds.w > 0 && SDL_PointInRect(&menu->pointer, &bounds))
+            return menu->holdings.slots + i;
     }
     return NULL;
 }
@@ -1793,6 +2124,54 @@ static void panel_holding_tooltip(SDL_Renderer *renderer, const struct menu_asse
     panel_tooltip(renderer, assets, menu->pointer, heading, details, centered_text);
 }
 
+/* CK2-authored building troops are available without a battle simulator;
+ * current raised troops and garrison manpower are NOT. */
+static bool province_potential_levy(const struct menu *menu, double *total,
+                                   double units[LEVY_TROOP_COUNT])
+{
+    if (!menu || !menu->selected || !total) return false;
+    *total = 0;
+    if (units) memset(units, 0, sizeof(double) * LEVY_TROOP_COUNT);
+    bool known = false;
+    for (size_t h = 0; h < menu->holdings.count; ++h) {
+        struct levy_potential potential;
+        if (!construction_holding_levy(&menu->construction, &menu->holdings.slots[h],
+                                       &potential)) continue;
+        known = true;
+        *total += potential.total;
+        if (units) for (size_t t = 0; t < LEVY_TROOP_COUNT; ++t)
+            units[t] += potential.troops[t];
+    }
+    return known;
+}
+
+static bool province_levy_tooltip(SDL_Renderer *renderer, const struct menu_assets *assets,
+                                 const struct menu *menu)
+{
+    if (!menu->selected || menu->character.open || !menu->province_skin.raise_levy.texture ||
+        !SDL_PointInRect(&menu->pointer, &menu->province_skin.raise_levy.area)) return false;
+    double total = 0, troops[LEVY_TROOP_COUNT] = {0};
+    const bool known = province_potential_levy(menu, &total, troops);
+    char details[720], line[100];
+    if (known)
+        snprintf(details, sizeof details, "Unraised base potential: %.0f troops\n"
+                 "Uses historical holdings and completed building effects.\n", total);
+    else
+        snprintf(details, sizeof details,
+                 "Troop definitions are not available for this province.\n");
+    if (known) for (size_t i = 0; i < LEVY_TROOP_COUNT; ++i) {
+        if (troops[i] < 0.5) continue;
+        snprintf(line, sizeof line, "\n%s: %.0f", levy_troop_names[i], troops[i]);
+        if (strlen(details) + strlen(line) < sizeof details) strcat(details, line);
+    }
+    const char *notice = "\n\nRaising armies, garrisons, laws, "
+                         "martial, technology and reinforcement are not simulated.";
+    if (strlen(details) + strlen(notice) < sizeof details) strcat(details, notice);
+    panel_tooltip(renderer, assets, menu->pointer, ck2_localize("LEVY", "Levy"), details,
+                  centered_text);
+    return true;
+}
+
 static bool character_government_tooltip(SDL_Renderer *renderer, const struct menu_assets *assets,
                                           const struct menu *menu)
 {
@@ -1811,9 +2190,14 @@ static bool character_government_tooltip(SDL_Renderer *renderer, const struct me
         government_find(&menu->settlement_scene.governments, authored) : NULL;
     if (authored[0]) {
         SDL_snprintf(details, sizeof details,
-            "Authored government: %s\nGroup: %s\n"
-            "Source: character history (not dynamically recalculated)",
-            authored, definition ? definition->group : "Not in loaded government definitions");
+            "Assigned government: %s\nGroup: %s\n"
+            "Source: %s",
+            authored, definition ? definition->group : "Not in loaded government definitions",
+            menu->character.ruler.government_inferred ?
+                (!strcmp(authored,"roman_imperial_government") ?
+                 "CK2 imperial title/law potential" :
+                 "Verified holding type (potential conditions pending)") :
+                 "dated character history");
     } else if (candidate && n == 1) {
         SDL_snprintf(details, sizeof details,
             "Possible type: %s\nGroup: %s\nColor: #%06x\n"
@@ -1830,11 +2214,39 @@ static bool character_government_tooltip(SDL_Renderer *renderer, const struct me
 }
 
 static void province_draw_header(SDL_Renderer *, const struct menu_assets *, const struct menu *);
+/* A minimal 2D counter. Projection comes from the same authored settlement
+ * anchor as the provincial map, not a separate hardcoded screen coordinate. */
+static void draw_campaign_armies(SDL_Renderer *renderer, const struct menu_assets *assets,
+                                 const struct menu *menu)
+{
+    for (size_t i = 0; i < menu->warfare.army_count; ++i) {
+        const struct warfare_army *army = menu->warfare.armies + i;
+        const struct map_settlement_marker *marker =
+            map_settlement_by_id(&menu->settlement_scene, army->province_id);
+        if (!marker) continue;
+        SDL_Point screen;
+        if (!map_view_project_ground(&menu->campaign_map, marker->x, marker->y, &screen)) continue;
+        if (screen.x < 10 || screen.x > WIDTH - 50 ||
+            screen.y < 60 || screen.y > HEIGHT - 36) continue;
+        SDL_Rect counter = {screen.x - 18, screen.y - 24, 46, 21};
+        if (army->ruler_id == menu->campaign_ruler_id)
+            SDL_SetRenderDrawColor(renderer, 25, 75, 132, 235);
+        else SDL_SetRenderDrawColor(renderer, 145, 45, 43, 235);
+        SDL_RenderFillRect(renderer, &counter);
+        SDL_SetRenderDrawColor(renderer, 226, 205, 154, 255);
+        SDL_RenderDrawRect(renderer, &counter);
+        char troops[24];
+        snprintf(troops, sizeof troops, "%u", army->troops);
+        campaign_text(renderer, assets, troops, counter.x + 5, counter.y + 3);
+    }
+}
+
 static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *assets,
                           const struct menu *menu)
 {
     if (menu->province_overlay)
         SDL_RenderCopy(renderer, menu->province_overlay, NULL, NULL);
+    draw_campaign_armies(renderer, assets, menu);
 
     blit(renderer, assets->hud_resources_left, 1260 + (menu->topbar_ready ? 2 * menu->topbar_offset : 0), 0);
     blit(renderer, assets->hud_resources_right, 1422, 0);
@@ -1900,12 +2312,21 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
     draw_wonder(renderer, assets, menu);
     draw_topbar_tooltip(renderer, assets, menu);
     const int hovered_mode = campaign_hud_ui_mode_hit(&menu->hud_ui, menu->pointer);
-    if (character_government_tooltip(renderer, assets, menu)) {
+    if (province_levy_tooltip(renderer, assets, menu)) {
+        /* Potential troops are informational until armies are implemented. */
+    } else if (character_government_tooltip(renderer, assets, menu)) {
         /* Original government sprite is already drawn by character_view. */
+    } else if (campaign_hud_ui_next_song_hit(&menu->hud_ui, menu->pointer)) {
+        panel_tooltip(renderer, assets, menu->pointer,
+                      ck2_localize("MINIMAP_NEXTSONG", "Next Song"),
+                      "Skip to another track from the installed CK2 music files",
+                      centered_text);
     } else if (hovered_mode >= 0) {
         const struct map_mode_definition *mode = map_mode_definition(hovered_mode);
         panel_tooltip(renderer, assets, menu->pointer, mode->label,
-                      mode->implemented ? "Select this map mode" : "Map coloring not implemented yet",
+                      mode->implemented ? (hovered_mode != MAP_MODE_TERRAIN && hovered_mode != MAP_MODE_REALMS ?
+                          "Historical-data overlay; color palette approximate" : "Select map mode")
+                          : "Requires gameplay simulation; currently unavailable",
                       centered_text);
     } else if (campaign_hud_ui_alert_hit(&menu->hud_ui, menu->pointer) >= 0) {
         panel_tooltip(renderer, assets, menu->pointer, "Alert (visual placeholder)",
@@ -1950,6 +2371,20 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
                          facts && facts->religion[0] ? facts->religion : "Not recorded",
                          owned && county.holder ? "\nRight-click: view county holder" : "",
                          realm && independent.holder ? "\nShift + right-click: view top liege" : "");
+                const unsigned occupier = warfare_occupation_holder(&menu->warfare, province->id);
+                if (occupier) {
+                    const size_t used = strlen(details);
+                    snprintf(details + used, sizeof details - used,
+                             "\nOccupied by ruler %u (military control only)", occupier);
+                }
+                for (size_t a = 0; a < menu->warfare.army_count; ++a) {
+                    const struct warfare_army *army = menu->warfare.armies + a;
+                    if (army->province_id != province->id) continue;
+                    const size_t used = strlen(details);
+                    if (sizeof details - used < 70) break;
+                    snprintf(details + used, sizeof details - used,
+                             "\nArmy %u: ruler %u, %u troops", army->id, army->ruler_id, army->troops);
+                }
                 panel_tooltip(renderer, assets, menu->pointer, heading, details, centered_text);
             }
             }
@@ -2020,6 +2455,34 @@ static void province_refresh_history_art(struct menu *menu)
     }
 }
 
+enum province_text_alignment { PROVINCE_TEXT_LEFT, PROVINCE_TEXT_CENTER, PROVINCE_TEXT_RIGHT };
+
+/* CK2 province.gui distinguishes left-aligned names/labels from right-aligned
+ * values. The old code centered everything, causing Culture/Religion overlap.
+ * Bound the glyphs to each original GUI text field and retain the caller's
+ * panel clip. This is independent of language/text length. */
+static void province_field_text(SDL_Renderer *renderer, const struct menu_assets *assets,
+                                const char *text, SDL_Rect field,
+                                enum province_text_alignment align)
+{
+    if (!assets || !assets->font || !text || !*text || field.w <= 0 || field.h <= 0)
+        return;
+    int text_width = 0;
+    for (const unsigned char *c = (const unsigned char *)text; *c; ++c)
+        text_width += assets->glyphs[*c].advance;
+    const int center = align == PROVINCE_TEXT_LEFT ? field.x + text_width / 2 :
+        align == PROVINCE_TEXT_RIGHT ? field.x + field.w - text_width / 2 :
+        field.x + field.w / 2;
+    const SDL_bool clipped = SDL_RenderIsClipEnabled(renderer);
+    SDL_Rect previous, clip = field;
+    SDL_RenderGetClipRect(renderer, &previous);
+    if (clipped && !SDL_IntersectRect(&previous, &field, &clip))
+        return;
+    SDL_RenderSetClipRect(renderer, &clip);
+    centered_text(renderer, assets, text, strlen(text), center, field.y);
+    SDL_RenderSetClipRect(renderer, clipped ? &previous : NULL);
+}
+
 static void province_draw_header(SDL_Renderer *renderer, const struct menu_assets *assets,
                                  const struct menu *menu)
 {
@@ -2043,8 +2506,12 @@ static void province_draw_header(SDL_Renderer *renderer, const struct menu_asset
     if (skin->raise_ships.texture) setup_widget_draw(&skin->raise_ships, renderer, menu->pointer);
     /* Header name and landed hierarchy follow province.gui, not guessed
      * center coordinates from the OpenCK2 development panel. */
-    campaign_text(renderer, assets, menu->selected->name,
-                  skin->name.x + skin->name.w / 2, skin->name.y);
+    province_field_text(renderer, assets, menu->selected->name, skin->name,
+                        PROVINCE_TEXT_CENTER);
+    struct menu_assets small = {.font = menu->era.small_font};
+    memcpy(small.glyphs, menu->era.small_glyphs, sizeof small.glyphs);
+    const struct menu_assets *stat_font = small.font ? &small : assets;
+    SDL_SetTextureColorMod(stat_font->font, 43, 34, 25);
     const size_t ix=(size_t)(menu->selected-menu->provinces.provinces);
     struct realm_province_ownership ownership;
     if (realm_province_ownership(&menu->realms, ix, &ownership) && ownership.has_county) {
@@ -2052,10 +2519,10 @@ static void province_draw_header(SDL_Renderer *renderer, const struct menu_asset
         for (unsigned depth=0; depth<8; ++depth) {
             struct realm_title_info parent;
             if (!realm_dejure_parent_info(&menu->realms, t.id, &parent)) break;
-            if (parent.id[0]=='d') campaign_text(renderer,assets,parent.name,
-                skin->duchy.x + skin->duchy.w/2,skin->duchy.y);
-            if (parent.id[0]=='k') campaign_text(renderer,assets,parent.name,
-                skin->kingdom.x + skin->kingdom.w/2,skin->kingdom.y);
+            if (parent.id[0]=='d') province_field_text(renderer, stat_font, parent.name,
+                skin->duchy, PROVINCE_TEXT_LEFT);
+            if (parent.id[0]=='k') province_field_text(renderer, stat_font, parent.name,
+                skin->kingdom, PROVINCE_TEXT_LEFT);
             if (!strcmp(t.id,parent.id)) break;
             t=parent;
         }
@@ -2084,28 +2551,27 @@ static void province_draw_header(SDL_Renderer *renderer, const struct menu_asset
         }
         annual += part;
     }
-    SDL_SetTextureColorMod(assets->font,35,28,21);
     if (known) {
         char amount[48];
         SDL_snprintf(amount,sizeof amount,"%.1f / yr",annual);
-        campaign_text(renderer,assets,amount,skin->tax_amount.x + skin->tax_amount.w/2,
-                      skin->tax_amount.y);
+        province_field_text(renderer, stat_font, amount, skin->tax_amount,
+                            PROVINCE_TEXT_RIGHT);
     }
-    campaign_text(renderer,assets,ck2_localize("CULTURE","Culture"),
-                  skin->culture_label.x+skin->culture_label.w/2,skin->culture_label.y);
-    campaign_text(renderer,assets,ck2_localize("RELIGION","Religion"),
-                  skin->religion_label.x+skin->religion_label.w/2,skin->religion_label.y);
-    campaign_text(renderer,assets,ck2_localize("SUPPLY","Supply"),
-                  skin->supply_label.x+skin->supply_label.w/2,skin->supply_label.y);
-    campaign_text(renderer,assets,ck2_localize("PLOTS_REVOLTRISK","Revolt Risk"),
-                  skin->revolt_label.x+skin->revolt_label.w/2,skin->revolt_label.y);
+    province_field_text(renderer, stat_font, ck2_localize("CULTURE","Culture"),
+                        skin->culture_label, PROVINCE_TEXT_LEFT);
+    province_field_text(renderer, stat_font, ck2_localize("RELIGION","Religion"),
+                        skin->religion_label, PROVINCE_TEXT_LEFT);
+    province_field_text(renderer, stat_font, ck2_localize("SUPPLY","Supply"),
+                        skin->supply_label, PROVINCE_TEXT_LEFT);
+    province_field_text(renderer, stat_font, ck2_localize("PLOTS_REVOLTRISK","Revolt Risk"),
+                        skin->revolt_label, PROVINCE_TEXT_LEFT);
     if (menu->holdings.culture_name[0])
-        campaign_text(renderer,assets,menu->holdings.culture_name,
-            skin->culture.x+skin->culture.w/2,skin->culture.y);
+        province_field_text(renderer, stat_font, menu->holdings.culture_name,
+                            skin->culture, PROVINCE_TEXT_RIGHT);
     if (menu->holdings.religion_name[0])
-        campaign_text(renderer,assets,menu->holdings.religion_name,
-            skin->religion.x+skin->religion.w/2,skin->religion.y);
-    SDL_SetTextureColorMod(assets->font,255,255,255);
+        province_field_text(renderer, stat_font, menu->holdings.religion_name,
+                            skin->religion, PROVINCE_TEXT_RIGHT);
+    SDL_SetTextureColorMod(stat_font->font, 255, 255, 255);
     SDL_RenderSetClipRect(renderer,clipped ? &previous : NULL);
 }
 
@@ -2121,6 +2587,115 @@ static void refresh_province_title_shield(struct menu *menu)
     const struct ruler_profile *ruler = realm_ruler(&menu->realms, owners.county.holder);
     menu->province_title_shield = era_title_shield(menu->renderer, menu->asset_root,
          owners.county.id, ruler ? ruler->religion_key : "");
+}
+
+/* Conversion effects live in campaign memory, never in CK2 history files.
+ * Keep selected province, map-mode facts and settlement graphical culture in sync. */
+static void conversion_replay_province(struct menu *menu, unsigned province_id)
+{
+    const struct province *p = province_by_id(&menu->provinces, province_id);
+    if (!p || !menu->settlement_scene.province_facts) return;
+    const size_t index = (size_t)(p - menu->provinces.provinces);
+    if (index >= menu->settlement_scene.province_fact_count) return;
+    struct map_province_facts *facts = &menu->settlement_scene.province_facts[index];
+    const char *culture = conversion_province_value(&menu->conversion, province_id,
+                                                     CONVERSION_CULTURE, facts->culture);
+    const char *faith = conversion_province_value(&menu->conversion, province_id,
+                                                  CONVERSION_RELIGION, facts->religion);
+    if (culture != facts->culture) SDL_strlcpy(facts->culture, culture, sizeof facts->culture);
+    if (faith != facts->religion) SDL_strlcpy(facts->religion, faith, sizeof facts->religion);
+    for (size_t i = 0; i < menu->settlement_scene.count; ++i) {
+        struct map_settlement_marker *m = &menu->settlement_scene.markers[i];
+        if (m->province_id != province_id) continue;
+        SDL_strlcpy(m->culture, facts->culture, sizeof m->culture);
+        SDL_strlcpy(m->religion, facts->religion, sizeof m->religion);
+        const struct settlement_culture *style = settlement_culture_find(&menu->settlement_scene.styles, m->culture);
+        if (style) {
+            SDL_strlcpy(m->graphical, style->graphics, sizeof m->graphical);
+            m->rgb = style->rgb;
+            m->culture_color_known = style->has_color;
+        }
+    }
+}
+
+static void conversion_replay_rulers(struct menu *menu)
+{
+    for (size_t i = 0; i < menu->conversion.person_count; ++i) {
+        const struct conversion_person *change = menu->conversion.people + i;
+        struct ruler_profile *person = realm_ruler_mutable(&menu->realms, change->id);
+        if (!person) continue;
+        if (change->has_culture) {
+            SDL_strlcpy(person->culture_key, change->culture, sizeof person->culture_key);
+            SDL_strlcpy(person->culture, ck2_localize(change->culture, change->culture), sizeof person->culture);
+        }
+        if (change->has_religion) {
+            SDL_strlcpy(person->religion_key, change->religion, sizeof person->religion_key);
+            SDL_strlcpy(person->religion, ck2_localize(change->religion, change->religion), sizeof person->religion);
+        }
+    }
+}
+
+static void conversion_catalog_load_files(struct menu *menu)
+{
+    conversion_catalog_free(&menu->conversion_catalog);
+    for (int kind = CONVERSION_RELIGION; kind <= CONVERSION_CULTURE; ++kind) {
+        const char *directory = kind == CONVERSION_RELIGION ? "common/religions" : "common/cultures";
+        struct ck2_asset_files files = ck2_list_assets(menu->asset_root, directory);
+        for (size_t i = 0; i < files.count; ++i) {
+            const char *name = files.names[i];
+            const size_t n = strlen(name);
+            if (n < 4 || strcmp(name + n - 4, ".txt")) continue;
+            char *data = load_from_directory(menu->asset_root, directory, name);
+            if (!data) continue;
+            if (!conversion_catalog_parse(&menu->conversion_catalog, kind, data))
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Conversion keys could not parse %s/%s", directory, name);
+            SDL_free(data);
+        }
+        ck2_free_asset_files(&files);
+    }
+    struct ck2_asset_files job_files = ck2_list_assets(menu->asset_root, "common/job_actions");
+    for (size_t i = 0; i < job_files.count; ++i) {
+        const char *name = job_files.names[i];
+        const size_t n = strlen(name);
+        if (n < 4 || strcmp(name + n - 4, ".txt")) continue;
+        char *jobs = load_from_directory(menu->asset_root, "common/job_actions", name);
+        if (!jobs) continue;
+        if (!conversion_catalog_jobs(&menu->conversion_catalog, jobs))
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Conversion council actions could not parse %s", name);
+        SDL_free(jobs);
+    }
+    ck2_free_asset_files(&job_files);
+    SDL_Log("Conversion definitions: %zu faiths, %zu cultures; Inquisition %d, Settle Tribe %d",
+        menu->conversion_catalog.names[CONVERSION_RELIGION].count,
+        menu->conversion_catalog.names[CONVERSION_CULTURE].count,
+        menu->conversion_catalog.inquisition_defined, menu->conversion_catalog.settle_tribe_defined);
+}
+
+static void conversion_selected_labels(struct menu *menu)
+{
+    if (!menu->selected) return;
+    const unsigned id = menu->selected->id;
+    const char *culture = conversion_province_value(&menu->conversion, id, CONVERSION_CULTURE,
+                                                     menu->holdings.culture_key);
+    const char *religion = conversion_province_value(&menu->conversion, id, CONVERSION_RELIGION,
+                                                      menu->holdings.religion_key);
+    char c[64], r[64];
+    SDL_strlcpy(c, culture, sizeof c);
+    SDL_strlcpy(r, religion, sizeof r);
+    SDL_strlcpy(menu->holdings.culture_key, c, sizeof menu->holdings.culture_key);
+    SDL_strlcpy(menu->holdings.religion_key, r, sizeof menu->holdings.religion_key);
+    SDL_strlcpy(menu->holdings.culture_name, ck2_localize(c, c), sizeof menu->holdings.culture_name);
+    SDL_strlcpy(menu->holdings.religion_name, ck2_localize(r, r), sizeof menu->holdings.religion_name);
+}
+
+static void conversion_map_refresh(struct menu *menu)
+{
+    map_theme_free(&menu->map_theme);
+    const enum map_mode_id mode = menu->map_modes.selected;
+    if (mode != MAP_MODE_REALMS && mode != MAP_MODE_TERRAIN)
+        (void)map_theme_build(&menu->map_theme, menu->renderer, &menu->campaign_map,
+                              &menu->provinces, &menu->realms, &menu->settlement_scene,
+                              &menu->construction, menu->asset_root, menu->start_date, mode);
 }
 
 static void select_province(struct menu *menu, const struct province *province)
@@ -2142,6 +2717,7 @@ static void select_province(struct menu *menu, const struct province *province)
             return;
         }
         holdings_load(&menu->holdings, menu->asset_root, province, menu->start_date);
+        conversion_selected_labels(menu);
         if (menu->settlement_scene.count) refresh_holding_style(menu);
         char *history = province_history_read(province, menu->asset_root);
         construction_history(&menu->construction, history, menu->start_date);
@@ -2187,7 +2763,173 @@ static bool load_realms(struct menu *menu, SDL_Window *window, struct campaign_d
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Realms map", SDL_GetError(), window);
         return false;
     }
+    if (menu->campaign_active) conversion_replay_rulers(menu);
     return true;
+}
+
+/* CK2 defines Roman imperial government through a title/law potential,
+ * not through castle type. Evaluate the documented bootstrap path only for
+ * holders of titles named by the installed government script. */
+static void government_assign_bookmark(struct menu *menu)
+{
+    const struct government_definition *roman=government_find(
+        &menu->settlement_scene.governments,"roman_imperial_government");
+    if (!roman || !roman->has_potential) return;
+    char candidates[12][80]={{0}};
+    const size_t n=government_potential_titles(roman,candidates,SDL_arraysize(candidates));
+    for (size_t i=0;i<n && i<SDL_arraysize(candidates);++i) {
+        struct realm_title_info title,primary;
+        if (!realm_title_info(&menu->realms,candidates[i],&title) || !title.holder ||
+            !realm_primary_title(&menu->realms,title.holder,&primary) ||
+            strcmp(primary.id,title.id)) continue;
+        struct ruler_profile *holder=realm_ruler_mutable(&menu->realms,title.holder);
+        if (!holder || (holder->government_key[0] && !holder->government_inferred)) continue;
+        /* The title's dated succession law is read separately from the
+         * player's active-law state; other rulers do not inherit player laws. */
+        char path[160];
+        SDL_snprintf(path,sizeof path,"history/titles/%s.txt",title.id);
+        char *history=load_data(menu->asset_root,path);
+        struct ck2_law_state laws={0};
+        const char *succession=NULL;
+        if (history) {
+            const unsigned cutoff=(unsigned)(menu->start_date.year*10000+
+                menu->start_date.month*100+menu->start_date.day);
+            if (ck2_law_title_history(&laws,&menu->law_catalog,history,cutoff)) {
+                const struct ck2_law *law=ck2_law_selected(&laws,&menu->law_catalog,"succession");
+                if (law) succession=law->key;
+            }
+        }
+        struct government_context ctx={.primary_title=primary.id,
+            .succession_law=succession,.game_started=false,.save_game=false,.is_patrician=false};
+        bool inferred=false;
+        const struct government_definition *result=government_resolve_special(
+            &menu->settlement_scene.governments,
+            holder->government_inferred ? NULL : holder->government_key,&ctx,&inferred);
+        if (result && inferred) {
+            SDL_strlcpy(holder->government_key,result->id,sizeof holder->government_key);
+            holder->government_inferred=true;
+            SDL_Log("CK2 imperial government inferred for %u (%s) from original potential",
+                    holder->id,primary.id);
+        }
+        ck2_law_state_free(&laws);
+        SDL_free(history);
+    }
+}
+
+/* Capital/holding government assignment is provisional: the original
+ * CK2 potential scripts also examine religion, holy orders, patricians,
+ * gender, and trade/coast flags. We cannot assert those have all passed.
+ * In particular, a city alone NEVER establishes a merchant republic. */
+static int compare_government_holders(const void *a, const void *b)
+{
+    const struct government_holding_evidence *aa=a, *bb=b;
+    return (aa->holder_id > bb->holder_id) - (aa->holder_id < bb->holder_id);
+}
+static void government_assign_holdings_bookmark(struct menu *menu)
+{
+    struct map_settlement_scene *scene=&menu->settlement_scene;
+    struct government_holding_evidence *e=scene->holding_evidence;
+    if (!e || !scene->holding_evidence_count) return;
+    qsort(e,scene->holding_evidence_count,sizeof *e,compare_government_holders);
+    size_t assigned=0;
+    for (size_t i=0;i<scene->holding_evidence_count;) {
+        size_t j=i+1;
+        while (j<scene->holding_evidence_count && e[j].holder_id==e[i].holder_id) ++j;
+        struct ruler_profile *r=realm_ruler_mutable(&menu->realms,e[i].holder_id);
+        if (r && !r->government_key[0]) {
+            struct realm_title_info primary;
+            if (realm_primary_title(&menu->realms,r->id,&primary)) {
+                const uint32_t bit=government_verified_holding(e+i,j-i,r->id,
+                                                                  primary.id,primary.capital);
+                const struct government_definition *type=government_provisional_holding(
+                    &scene->governments,bit);
+                if (type && bit==GOVERNMENT_TEMPLE) {
+                    const struct government_religion *faith=government_religion_find(
+                        &scene->religions,r->religion_key);
+                    /* Theocracy potential excludes Muslims and forbids a
+                     * temple-holder gender unless its religion permits it. */
+                    if (!faith || !strcmp(faith->group,"muslim") ||
+                        (r->female ? !faith->female_temple : !faith->male_temple))
+                        type=NULL;
+                }
+                if (type) {
+                    SDL_strlcpy(r->government_key,type->id,sizeof r->government_key);
+                    r->government_inferred=true;
+                    ++assigned;
+                }
+            }
+        }
+        i=j;
+    }
+    SDL_Log("Government holding evidence: %zu verified baronies; %zu provisional nomad/republic/theocracy rulers",
+            scene->holding_evidence_count,assigned);
+}
+
+static uint32_t government_runtime_capital_holding(const struct menu *menu,
+                                                   unsigned holder,
+                                                   const struct realm_title_info *primary)
+{
+    /* After succession, dated barony holders can have changed. Re-read
+     * owners from the runtime title index rather than trusting bookmark IDs. */
+    const struct map_settlement_scene *scene=&menu->settlement_scene;
+    if (!scene->holding_evidence_count) return 0;
+    struct government_holding_evidence *current=calloc(scene->holding_evidence_count,sizeof *current);
+    if (!current) return 0;
+    size_t n=0;
+    for (size_t i=0;i<scene->holding_evidence_count;++i) {
+        const struct government_holding_evidence *f=scene->holding_evidence+i;
+        struct realm_title_info t;
+        if (realm_title_info(&menu->realms,f->title_id,&t) && t.holder==holder) {
+            current[n]=*f;current[n++].holder_id=holder;
+        }
+    }
+    const uint32_t bit=government_verified_holding(current,n,holder,
+                                                    primary->id,primary->capital);
+    free(current);
+    return bit;
+}
+
+/* Re-evaluate the playable ruler when a developer changes succession law or
+ * after a title transfer. A missing current law is unresolved, not false. */
+static bool government_refresh_player(struct menu *menu)
+{
+    struct ruler_profile *ruler=realm_ruler_mutable(&menu->realms,menu->campaign_ruler_id);
+    if (!ruler || (ruler->government_key[0] && !ruler->government_inferred)) return false;
+    struct realm_title_info primary;
+    if (!realm_primary_title(&menu->realms,ruler->id,&primary)) return false;
+    char before[sizeof ruler->government_key];
+    SDL_strlcpy(before,ruler->government_key,sizeof before);
+    const struct ck2_law *law=ck2_law_selected(&menu->active_laws,&menu->law_catalog,"succession");
+    struct government_context ctx={.primary_title=primary.id,
+        .succession_law=law ? law->key : NULL,
+        .game_started=true,.is_patrician=false};
+    const struct government_definition *roman=government_find(
+        &menu->settlement_scene.governments,"roman_imperial_government");
+    const enum government_truth status=government_evaluate_potential(roman,&ctx);
+    if (status==GOVERNMENT_TRUE && roman) {
+        SDL_strlcpy(ruler->government_key,roman->id,sizeof ruler->government_key);
+        ruler->government_inferred=true;
+    } else if (status!=GOVERNMENT_UNRESOLVED) {
+        /* A former imperial holder must not retain the imperial government
+         * after losing the title/law. Reclassify from *currently* held baronies. */
+        ruler->government_key[0]=0;
+        ruler->government_inferred=false;
+        const uint32_t bit=government_runtime_capital_holding(menu,ruler->id,&primary);
+        const struct government_definition *type=government_provisional_holding(
+            &menu->settlement_scene.governments,bit);
+        if (type && bit==GOVERNMENT_TEMPLE) {
+            const struct government_religion *faith=government_religion_find(
+                &menu->settlement_scene.religions,ruler->religion_key);
+            if (!faith || !strcmp(faith->group,"muslim") ||
+                (ruler->female ? !faith->female_temple : !faith->male_temple))
+                type=NULL;
+        }
+        if (type) {
+            SDL_strlcpy(ruler->government_key,type->id,sizeof ruler->government_key);
+            ruler->government_inferred=true;
+        }
+    }
+    return strcmp(before,ruler->government_key)!=0;
 }
 
 static SDL_Rect lobby_row(const struct menu *menu, enum lobby_element list, int index)
@@ -2577,8 +3319,78 @@ static void open_campaign(struct menu *menu, SDL_Window *window, bool new_game)
     if (new_game) {
         menu->technology.open = false;
         menu->console.open = false;
+        menu->event_open = false;
+        menu->event_target_id = 0;
+        menu->bloodlines.open = false;
+        menu->wonder.open = false;
+        free(menu->wonder.locations);
+        menu->wonder.locations = NULL;
+        menu->wonder.location_count = menu->wonder.location_capacity = 0;
+        menu->wonder.catalog_ready = false;
         SDL_StopTextInput();
         construction_reset(&menu->construction);
+        family_gameplay_free(&menu->family);
+        ck2_law_state_free(&menu->active_laws);
+        ck2_law_catalog_free(&menu->law_catalog);
+        ck2_elections_free(&menu->election_catalog);
+        ck2_trade_catalog_free(&menu->trade_catalog);
+        menu->government_mechanics=(struct ck2_government_mechanics){0};
+        menu->government_rules=(struct ck2_government_rules){0};
+        char *gov_defines=load_data(menu->asset_root,"common/defines.lua");
+        if (!ck2_government_rules_parse(&menu->government_rules,gov_defines))
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,"Nomad/merchant defines.lua rules missing");
+        SDL_free(gov_defines);
+        static const char *const trade_files[]={"common/buildings/00_tradepost.txt",
+                                                "common/buildings/01_tradepost.txt"};
+        for (size_t tf=0;tf<SDL_arraysize(trade_files);++tf) {
+            char *data=load_data(menu->asset_root,trade_files[tf]);
+            if (!data) continue;
+            if (!ck2_trade_catalog_parse(&menu->trade_catalog,data))
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,"Trade post definitions malformed: %s",trade_files[tf]);
+            SDL_free(data);
+        }
+        struct ck2_asset_files election_files=ck2_list_assets(menu->asset_root,"common/succession_voting");
+        for (size_t i=0;i<election_files.count;++i) {
+            const char *name=election_files.names[i];
+            const size_t len=strlen(name);
+            if (len<4 || strcmp(name+len-4,".txt")) continue;
+            char *source=load_from_directory(menu->asset_root,"common/succession_voting",name);
+            if (source) {
+                if (!ck2_elections_parse(&menu->election_catalog,source))
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,"Cannot index CK2 elective rules: %s",name);
+                SDL_free(source);
+            }
+        }
+        ck2_free_asset_files(&election_files);
+        SDL_Log("Indexed %zu original CK2 election rules (scripted voting not yet evaluated)",
+                menu->election_catalog.count);
+        static const char *const law_files[] = {
+            "common/laws/demesne_laws.txt", "common/laws/ze_demesne_laws.txt",
+            "common/laws/ze_obligation_laws.txt", "common/laws/succession_laws.txt",
+            "common/laws/crown_laws.txt", "common/laws/ze_crown_laws.txt",
+            "common/laws/ze_council_power_laws.txt"
+        };
+        for (size_t law_i=0;law_i<SDL_arraysize(law_files);++law_i) {
+            char *source=load_data(menu->asset_root,law_files[law_i]);
+            if (source) {
+                if (!ck2_law_parse(&menu->law_catalog,source))
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,"Could not parse CK2 laws: %s",law_files[law_i]);
+                SDL_free(source);
+            }
+        }
+        SDL_Log("Indexed %zu authored CK2 laws (no scripted law eligibility yet)",menu->law_catalog.count);
+        warfare_state_free(&menu->warfare);
+        warfare_graph_free(&menu->warfare_graph);
+        conversion_state_free(&menu->conversion);
+        conversion_catalog_load_files(menu);
+        /* Dynamic IDs are reserved high above CK2's ordinary character IDs.
+         * Do not write these provisional IDs into history files. */
+        menu->family.next_id = 0xf0000000u;
+        char *family_defines = load_data(menu->asset_root, "common/defines.lua");
+        if (!family_gameplay_rules(&menu->family, family_defines))
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Family rules unavailable: marriage/pregnancy actions disabled");
+        SDL_free(family_defines);
         menu->character.open = false;
         menu->character.ruler.id = 0;
         menu->character.show_vassals = false;
@@ -2600,6 +3412,7 @@ static void open_campaign(struct menu *menu, SDL_Window *window, bool new_game)
         menu->campaign_ruler = profile ? featured_ruler(era, profile->id)
             : index >= 0 ? &era->rulers[index] : NULL;
         menu->campaign_ruler_id = profile ? profile->id : menu->campaign_ruler ? menu->campaign_ruler->id : 0;
+        menu->campaign_start_ruler_id = menu->campaign_ruler_id;
         if (menu->campaign_portrait)
             SDL_DestroyTexture(menu->campaign_portrait);
         menu->campaign_portrait = menu->setup_province ? menu->setup_portrait : NULL;
@@ -2616,6 +3429,21 @@ static void open_campaign(struct menu *menu, SDL_Window *window, bool new_game)
     if (!load_realms(menu, window, menu->start_date))
         menu->realms_visible = false;
     if (new_game) {
+        struct realm_title_info historical_primary;
+        if (realm_primary_title(&menu->realms,menu->campaign_ruler_id,&historical_primary)) {
+            char path[160];
+            SDL_snprintf(path,sizeof path,"history/titles/%s.txt",historical_primary.id);
+            char *title_history=load_data(menu->asset_root,path);
+            if (title_history) {
+                const unsigned cutoff=(unsigned)(menu->start_date.year*10000 +
+                    menu->start_date.month*100 + menu->start_date.day);
+                if (!ck2_law_title_history(&menu->active_laws,&menu->law_catalog,title_history,cutoff))
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,"Unable to apply primary title's dated laws");
+                SDL_free(title_history);
+            }
+        }
+    }
+    if (new_game) {
         SDL_DestroyTexture(menu->campaign_title_shield);
         menu->campaign_title_shield = NULL;
         struct realm_title_info primary;
@@ -2629,13 +3457,10 @@ static void open_campaign(struct menu *menu, SDL_Window *window, bool new_game)
         if (economy_snapshot_build(&menu->economy, menu->asset_root, &menu->provinces,
                                     &menu->realms, &menu->construction, menu->campaign_ruler_id,
                                     menu->start_date) == 0) {
-            menu->campaign.monthly_tax = ck2_tax_monthly(menu->economy.annual_direct_tax);
-            menu->campaign.monthly_tax_known = menu->economy.missing_tax_definitions == 0;
+            refresh_law_income(menu);
             menu->campaign.monthly_prestige = menu->economy.monthly_prestige;
             menu->campaign.monthly_piety = menu->economy.monthly_piety;
             menu->campaign.demesne_count = menu->economy.direct_count;
-            menu->campaign.demesne_limit = menu->economy.demesne_limit;
-            menu->campaign.demesne_limit_known = menu->economy.has_demesne_limit;
             SDL_Log("Economy bookmark snapshot: %zu personal holdings (%u county-holder fallbacks), "
                     "%.2f direct annual tax, %.2f monthly prestige, %.2f monthly piety; "
                     "%u holdings missing base tax definitions",
@@ -2662,6 +3487,14 @@ static void open_campaign(struct menu *menu, SDL_Window *window, bool new_game)
         map_settlements_build(&menu->settlement_scene, menu->asset_root,
                               &menu->provinces, &menu->realms, menu->start_date) < 0)
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Map settlements unavailable: %s", SDL_GetError());
+    government_assign_bookmark(menu);
+    government_assign_holdings_bookmark(menu);
+    /* Initial tax snapshot may have been calculated before governments were
+     * assigned. Rerun once with the actual government exemption rules. */
+    if (menu->economy.direct_count || menu->economy.vassal_count)
+        refresh_law_income(menu);
+    for (size_t i = 0; i < menu->conversion.province_count; ++i)
+        conversion_replay_province(menu, menu->conversion.provinces[i].id);
     if (menu->selected) {
         refresh_province_title_shield(menu);
         refresh_holding_style(menu);
@@ -2680,6 +3513,7 @@ static void open_campaign(struct menu *menu, SDL_Window *window, bool new_game)
     load_campaign_topbar(menu);
     campaign_hud_ui_load(&menu->hud_ui, menu->renderer, menu->asset_root,
                          (SDL_Point){WIDTH, HEIGHT});
+    map_theme_free(&menu->map_theme);
     menu->map_modes.selected = menu->realms_visible ? MAP_MODE_REALMS : MAP_MODE_TERRAIN;
     if (new_game)
         menu->campaign_speed = 4;
@@ -2702,8 +3536,18 @@ static void move_map(struct menu *menu, SDL_Window *window, int dx, int dy, int 
         : menu->era.eras[menu->era.selected].date;
     if (menu->realms_visible && !load_realms(menu, window, date))
         menu->realms_visible = false;
-    if (menu->screen == CAMPAIGN)
-        menu->map_modes.selected = menu->realms_visible ? MAP_MODE_REALMS : MAP_MODE_TERRAIN;
+    if (menu->screen == CAMPAIGN) {
+        if (menu->map_modes.selected != MAP_MODE_TERRAIN &&
+            menu->map_modes.selected != MAP_MODE_REALMS) {
+            if (map_theme_build(&menu->map_theme, menu->renderer, &menu->campaign_map,
+                                &menu->provinces, &menu->realms, &menu->settlement_scene,
+                                &menu->construction, menu->asset_root,
+                                menu->start_date, menu->map_modes.selected) < 0)
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Map mode refresh failed");
+        } else {
+            menu->map_modes.selected = menu->realms_visible ? MAP_MODE_REALMS : MAP_MODE_TERRAIN;
+        }
+    }
     if (menu->screen == CAMPAIGN && menu->selected) {
         const struct province *selected = menu->selected;
         menu->selected = NULL;
@@ -2734,13 +3578,34 @@ static SDL_Texture *character_relative_portrait(void *context, const struct rule
     return setup_character_portrait(context, profile);
 }
 
+static bool wonder_catalog_open(struct menu *menu, int step)
+{
+    wonder_catalog_build(menu);
+    struct wonder_panel *wonder = &menu->wonder;
+    if (!wonder->location_count) return false;
+    const size_t index = wonder_navigation_index(wonder->locations, wonder->location_count,
+                                                  menu->selected ? menu->selected->id : 0,
+                                                  step);
+    const struct province *province = province_by_id(&menu->provinces, wonder->locations[index]);
+    if (!province) return false;
+    menu->character.open = false;
+    select_province(menu, province);
+    wonder->open = load_wonder_view(menu);
+    return wonder->open;
+}
+
 static bool campaign_wonder_click(struct menu *menu, SDL_Point point)
 {
     struct wonder_panel *wonder = &menu->wonder;
     if (wonder->open) {
-        if (SDL_PointInRect(&point, &wonder->close.area))
+        if (SDL_PointInRect(&point, &wonder->close.area)) {
             wonder->open = false;
-        return SDL_PointInRect(&point, &wonder->background.area);
+        } else if (wonder->next.texture && SDL_PointInRect(&point, &wonder->next.area)) {
+            (void)wonder_catalog_open(menu, 1);
+        } else if (wonder->previous.texture && SDL_PointInRect(&point, &wonder->previous.area)) {
+            (void)wonder_catalog_open(menu, -1);
+        }
+        return true; /* Great Works is modal; no click-through. */
     }
     if (menu->character.open || menu->building_open || !wonder->id[0] || !wonder->button.texture ||
         !SDL_PointInRect(&point, &wonder->button.area))
@@ -2764,12 +3629,53 @@ static void inspect_campaign_character(struct menu *menu, const struct ruler_pro
         return;
     }
     if (view->ruler.id != source->id) {
-        struct ruler_profile profile = *source;
+        struct ruler_profile profile;
+        (void)family_gameplay_get(&menu->family, source, &profile);
+        /* Government assignment belongs to the current realm snapshot, not
+         * the family's earlier imported copy of the character. */
+        SDL_strlcpy(profile.government_key, source->government_key,
+                    sizeof profile.government_key);
+        profile.government_inferred=source->government_inferred;
+        /* Runtime faith/culture overrides must also survive a family edit. */
+        const char *faith = conversion_person_value(&menu->conversion, profile.id,
+                                                     CONVERSION_RELIGION, profile.religion_key);
+        const char *culture = conversion_person_value(&menu->conversion, profile.id,
+                                                       CONVERSION_CULTURE, profile.culture_key);
+        char faith_key[64], culture_key[64];
+        SDL_strlcpy(faith_key, faith, sizeof faith_key);
+        SDL_strlcpy(culture_key, culture, sizeof culture_key);
+        SDL_strlcpy(profile.religion_key, faith_key, sizeof profile.religion_key);
+        SDL_strlcpy(profile.culture_key, culture_key, sizeof profile.culture_key);
+        SDL_strlcpy(profile.religion, ck2_localize(faith_key, faith_key), sizeof profile.religion);
+        SDL_strlcpy(profile.culture, ck2_localize(culture_key, culture_key), sizeof profile.culture);
         /* Marriage history can be recorded only on the other spouse. */
         if (!profile.spouse && view->partner.profile.id == profile.id && !view->ruler.deceased)
             profile.spouse = view->ruler.id;
         character_view_set(view, menu->asset_root, menu->start_date, &profile, menu->renderer,
                            character_relative_portrait, menu);
+        /* The original portrait loader only scans static character history.
+         * Merge runtime births into the same child-card slots. */
+        unsigned ids[CHARACTER_FAMILY_LIMIT];
+        const size_t child_count = family_gameplay_children(&menu->family, profile.id,
+                                                             ids, CHARACTER_FAMILY_LIMIT);
+        for (size_t i = 0; i < child_count && i < CHARACTER_FAMILY_LIMIT; ++i) {
+            const struct ruler_profile *child = family_gameplay_find(&menu->family, ids[i]);
+            if (!child) continue;
+            size_t slot = 0;
+            while (slot < CHARACTER_FAMILY_LIMIT &&
+                   view->family_members[2][slot].profile.id &&
+                   view->family_members[2][slot].profile.id != child->id) ++slot;
+            if (slot == CHARACTER_FAMILY_LIMIT) continue;
+            struct character_relative *relative = &view->family_members[2][slot];
+            if (relative->profile.id != child->id) {
+                SDL_DestroyTexture(relative->portrait);
+                relative->portrait = character_relative_portrait(menu, child);
+            }
+            relative->profile = *child;
+        }
+        const struct ruler_profile *partner = family_gameplay_find(&menu->family,
+                                                                   profile.spouse);
+        if (partner) view->partner.profile = *partner;
         character_view_titles(view, &menu->realms, menu->renderer, menu->asset_root);
     }
     menu->building_open = false;
@@ -2792,6 +3698,22 @@ static bool campaign_character_click(struct menu *menu, SDL_Point point)
         return false;
     if (SDL_PointInRect(&point, &view->close.area)) {
         view->open = false;
+        return true;
+    }
+    if (view->extra_icons[3].texture && SDL_PointInRect(&point, &view->extra_icons[3].area)) {
+        if (bloodline_view_load(&menu->bloodlines, menu->renderer, menu->asset_root,
+                                (SDL_Point){WIDTH, HEIGHT}) < 0)
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Bloodlines window: %s", SDL_GetError());
+        else {
+            SDL_strlcpy(menu->bloodlines.owner_name, view->ruler.name, sizeof menu->bloodlines.owner_name);
+            menu->bloodlines.open = true;
+            view->open = false;
+        }
+        return true;
+    }
+    if (view->extra_icons[11].texture && SDL_PointInRect(&point, &view->extra_icons[11].area)) {
+        if (!wonder_catalog_open(menu, 0))
+            SDL_Log("Great Works: no constructed works available in recorded province history");
         return true;
     }
     enum tree_mode requested = TREE_FAMILY;
@@ -3003,6 +3925,9 @@ static void draw(SDL_Renderer *renderer,
     SDL_RenderCopy(renderer, map, NULL, NULL);
     if (world && menu->realms_visible)
         realm_map_draw(&menu->realms, renderer);
+    if (menu->screen == CAMPAIGN && menu->map_modes.selected != MAP_MODE_TERRAIN &&
+        menu->map_modes.selected != MAP_MODE_REALMS)
+        map_theme_draw(&menu->map_theme, renderer);
     if (menu->screen == CAMPAIGN)
         draw_map_settlements(renderer, assets, menu);
     if (!world && menu->screen != STARTING_ERA) {
@@ -3086,7 +4011,9 @@ static void draw(SDL_Renderer *renderer,
     }
     if (menu->screen == CAMPAIGN) {
         technology_view_draw(&menu->technology, renderer, assets, menu->pointer, centered_text);
+        bloodline_view_draw(&menu->bloodlines, renderer, assets, menu->pointer, centered_text);
         tree_view_draw(&menu->genealogy, renderer, assets, centered_text);
+        draw_scripted_event(renderer, assets, menu);
         draw_debug_console(renderer, assets, &menu->console);
     }
     SDL_RenderPresent(renderer);
@@ -3373,6 +4300,15 @@ static void select_campaign_mode(struct menu *menu, SDL_Window *window, enum map
         menu->realms_visible = false;
     if (mode == MAP_MODE_REALMS && !menu->realms_visible)
         menu->map_modes.selected = MAP_MODE_TERRAIN;
+    else if (mode != MAP_MODE_REALMS && mode != MAP_MODE_TERRAIN) {
+        if (map_theme_build(&menu->map_theme, menu->renderer, &menu->campaign_map,
+                            &menu->provinces, &menu->realms, &menu->settlement_scene,
+                            &menu->construction, menu->asset_root, menu->start_date, mode) < 0) {
+            menu->map_modes.selected = MAP_MODE_TERRAIN;
+        } else {
+            menu->realms_visible = false;
+        }
+    }
     menu_sound_play(&menu->music, CUE_GENERIC);
 }
 
@@ -3406,6 +4342,1308 @@ static void toggle_technology(struct menu *menu)
     map_gesture_cancel(&menu->map_gesture);
 }
 
+static void conversion_command(struct menu *menu, struct debug_console_result command)
+{
+    enum conversion_kind kind = CONVERSION_RELIGION;
+    switch (command.action) {
+    case DEBUG_SET_PROVINCE_CULTURE: case DEBUG_SET_CHARACTER_CULTURE:
+    case DEBUG_MISSION_CULTURE: case DEBUG_RESOLVE_CULTURE:
+        kind = CONVERSION_CULTURE; break;
+    default: break;
+    }
+    const bool province = command.action == DEBUG_SET_PROVINCE_CULTURE ||
+        command.action == DEBUG_SET_PROVINCE_RELIGION;
+    const bool character = command.action == DEBUG_SET_CHARACTER_CULTURE ||
+        command.action == DEBUG_SET_CHARACTER_RELIGION;
+    const bool mission = command.action == DEBUG_MISSION_CULTURE ||
+        command.action == DEBUG_MISSION_RELIGION;
+    const bool resolve = command.action == DEBUG_RESOLVE_CULTURE ||
+        command.action == DEBUG_RESOLVE_RELIGION;
+    if (command.action == DEBUG_CONVERSION_STATUS) {
+        char output[200];
+        snprintf(output, sizeof output, "Conversion records: %zu provinces; %zu characters; %u revision.",
+                 menu->conversion.province_count, menu->conversion.person_count,
+                 menu->conversion.revision);
+        debug_console_output(&menu->console, output);
+        for (int k = 0; k <= 1; ++k) {
+            const struct conversion_mission *m = &menu->conversion.missions[k];
+            if (m->active) {
+                snprintf(output, sizeof output, "%s mission in province %u by ruler %u for %s (manual event resolution only).",
+                         k ? "Culture" : "Faith", m->province_id, m->actor_id, m->target);
+                debug_console_output(&menu->console, output);
+            }
+        }
+        return;
+    }
+    const struct ruler_profile *player = realm_ruler(&menu->realms, menu->campaign_ruler_id);
+    if (character) {
+        if (!player) { debug_console_output(&menu->console, "No active landed character to convert."); return; }
+        const char *current = kind == CONVERSION_RELIGION ? player->religion_key : player->culture_key;
+        enum conversion_status status = conversion_person_set(&menu->conversion,
+                            &menu->conversion_catalog, player->id, kind, command.argument, current);
+        if (status == CONVERSION_OK) {
+            conversion_replay_rulers(menu);
+            menu->character.ruler.id = 0;
+            if (menu->character.open)
+                inspect_campaign_character(menu, realm_ruler(&menu->realms, menu->campaign_ruler_id));
+            conversion_map_refresh(menu);
+        }
+        debug_console_output(&menu->console, conversion_status_name(status));
+        return;
+    }
+    if (resolve && !menu->conversion.missions[kind].active) {
+        debug_console_output(&menu->console, conversion_status_name(CONVERSION_NO_MISSION));
+        return;
+    }
+    const unsigned id = resolve ? menu->conversion.missions[kind].province_id :
+                             menu->selected ? menu->selected->id : 0;
+    const struct province *selection = province_by_id(&menu->provinces, id);
+    if (!selection) {
+        debug_console_output(&menu->console, "Select a land province first (or assign a mission).");
+        return;
+    }
+    const size_t index = (size_t)(selection - menu->provinces.provinces);
+    if (index >= menu->settlement_scene.province_fact_count) {
+        debug_console_output(&menu->console, "Province history is not loaded."); return;
+    }
+    const struct map_province_facts *facts = &menu->settlement_scene.province_facts[index];
+    const char *current = kind == CONVERSION_RELIGION ? facts->religion : facts->culture;
+    enum conversion_status status = CONVERSION_INVALID_TARGET;
+    if (province) {
+        status = conversion_province_set(&menu->conversion, &menu->conversion_catalog,
+                                          id, kind, command.argument, current);
+    } else if (mission) {
+        /* The original job-action definitions constrain these assignments:
+         * inquisition: own or vassal county; settle_tribe: own county + tribal.
+         * More elaborate scripture, game rules and diplomacy remain absent. */
+        struct realm_province_ownership owner;
+        if (!player || !realm_province_ownership(&menu->realms, index, &owner) ||
+            !owner.has_county || (kind == CONVERSION_CULTURE &&
+            (owner.county.holder != player->id || strcmp(player->government_key, "tribal_government"))) ||
+            (kind == CONVERSION_RELIGION && (!owner.has_independent ||
+                                              owner.independent.holder != player->id))) {
+            debug_console_output(&menu->console, "CK2 council mission: must be eligible owned/vassal province (Settle Tribe requires tribal ruler)." );
+            return;
+        }
+        const char *target = kind == CONVERSION_RELIGION ? player->religion_key : player->culture_key;
+        status = conversion_mission_assign(&menu->conversion, &menu->conversion_catalog,
+                                           kind, id, player->id, target, current);
+    } else if (resolve) {
+        status = conversion_mission_complete(&menu->conversion, &menu->conversion_catalog,
+                                             kind, current);
+    }
+    debug_console_output(&menu->console, conversion_status_name(status));
+    if (status == CONVERSION_OK && !mission) {
+        conversion_replay_province(menu, id);
+        if (menu->selected && menu->selected->id == id) {
+            conversion_selected_labels(menu);
+            refresh_holding_style(menu);
+        }
+        conversion_map_refresh(menu);
+    } else if (status == CONVERSION_OK && mission)
+        debug_console_output(&menu->console, "Mission staged; CK2 event logic unavailable. Use resolvefaith / resolveculture for a developer effect.");
+}
+
+/* Searches mounted CK2 base/DLC/mod event scripts; no bundled CK2 event data.
+ * Intentional on demand: an absent events/ directory cannot crash startup. */
+static bool scripted_event_open(struct menu *menu, const char *arguments)
+{
+    char event_id[96]={0}, target_text[48]={0}, trailing[2]={0};
+    const int fields=arguments ? sscanf(arguments,"%95s %47s %1s",event_id,target_text,trailing) : 0;
+    if (fields<1 || fields>2 || !ck2_event_valid_id(event_id)) {
+        debug_console_output(&menu->console,"Usage: event <id> [target id] (e.g. event 900 or event WoL.1)");
+        return false;
+    }
+    unsigned target_id=0;
+    if (fields==2) {
+        errno=0;
+        char *end=NULL;
+        const unsigned long parsed=strtoul(target_text,&end,10);
+        if (errno || !end || *end || !parsed || parsed>UINT_MAX) {
+            debug_console_output(&menu->console,"Invalid event target ID.");
+            return false;
+        }
+        target_id=(unsigned)parsed;
+    }
+    struct ck2_asset_files files=ck2_list_assets(menu->asset_root,"events");
+    if (!files.count) {
+        debug_console_output(&menu->console,"No events/ files mounted. Select your CK2 installation/DLC in Content Settings.");
+        ck2_free_asset_files(&files);
+        return false;
+    }
+    struct ck2_event match={0};
+    bool found=false;
+    for (size_t i=0;i<files.count && !found;i++) {
+        const char *name=files.names[i];
+        const size_t n=strlen(name);
+        if (n<4 || strcmp(name+n-4,".txt")) continue;
+        char *script=load_from_directory(menu->asset_root,"events",name);
+        if (!script) continue;
+        char origin[192];
+        snprintf(origin,sizeof origin,"events/%.177s",name);
+        found=ck2_event_find_in_text(script,event_id,origin,&match)==1;
+        SDL_free(script);
+    }
+    ck2_free_asset_files(&files);
+    if (!found) {
+        char message[180];
+        snprintf(message,sizeof message,"Event %.95s not found in mounted events/ scripts.",event_id);
+        debug_console_output(&menu->console,message);
+        return false;
+    }
+    if (match.kind==CK2_EVENT_CHARACTER) {
+        if (!menu->campaign_ruler_id || (target_id && target_id!=menu->campaign_ruler_id)) {
+            debug_console_output(&menu->console,"Only the playable ruler is supported as a character-event target.");
+            return false;
+        }
+        target_id=menu->campaign_ruler_id;
+    } else {
+        if (!target_id && menu->selected) target_id=menu->selected->id;
+        if (!target_id || !province_by_id(&menu->provinces,target_id)) {
+            debug_console_output(&menu->console,"Select a province or supply a valid province ID: event <id> <provinceID>.");
+            return false;
+        }
+    }
+    menu->event_target_id=target_id;
+    menu->pending_event=match;
+    menu->event_open=true;
+    menu->console.open=false;
+    SDL_StopTextInput();
+    map_gesture_cancel(&menu->map_gesture);
+    tree_view_close(&menu->genealogy);
+    menu->technology.open=false;
+    char message[220];
+    snprintf(message,sizeof message,"Fired %.80s (%s) from %.90s. Choose an option; triggers bypassed.",
+             match.id,match.kind==CK2_EVENT_CHARACTER?"character":"province",match.source);
+    debug_console_output(&menu->console,message);
+    if (match.has_immediate)
+        debug_console_output(&menu->console,"Note: immediate script block is not executed.");
+    if (match.truncated_options)
+        debug_console_output(&menu->console,"Warning: this event has more than 8 options; remaining choices are not available yet.");
+    return true;
+}
+
+static void scripted_event_choose(struct menu *menu, unsigned selected)
+{
+    if (!menu->event_open) {
+        debug_console_output(&menu->console,"No fired event is pending. Try event <id>.");
+        return;
+    }
+    if (!selected || selected>menu->pending_event.option_count) {
+        debug_console_output(&menu->console,"Invalid option number for this event.");
+        return;
+    }
+    const struct ck2_event_option *option=&menu->pending_event.options[selected-1];
+    const struct ck2_event_deltas delta=ck2_event_numeric_deltas(option);
+    /* A province event is scoped to the province; numerical character effects
+     * cannot be assigned safely without interpreting a nested character scope. */
+    unsigned unsupported=option->ignored_effects;
+    if (menu->pending_event.kind==CK2_EVENT_CHARACTER) {
+        double gold=(double)menu->campaign.treasury+menu->campaign.gold_remainder+delta.wealth;
+        if (gold<0) gold=0;
+        if (gold>UINT_MAX) gold=UINT_MAX;
+        menu->campaign.treasury=(unsigned)gold;
+        menu->campaign.gold_remainder=gold-(double)menu->campaign.treasury;
+        menu->campaign.prestige+=delta.prestige;
+        menu->campaign.piety+=delta.piety;
+    } else {
+        for (size_t i=0;i<option->effect_count;i++) {
+            enum ck2_event_effect_kind kind=option->effects[i].kind;
+            if (kind==CK2_EVENT_WEALTH || kind==CK2_EVENT_PRESTIGE || kind==CK2_EVENT_PIETY)
+                ++unsupported;
+        }
+    }
+    for (size_t i=0;i<option->effect_count;i++) {
+        const struct ck2_event_effect *effect=&option->effects[i];
+        if (effect->kind!=CK2_EVENT_CULTURE && effect->kind!=CK2_EVENT_RELIGION) continue;
+        enum conversion_kind kind=effect->kind==CK2_EVENT_CULTURE?CONVERSION_CULTURE:CONVERSION_RELIGION;
+        enum conversion_status status=CONVERSION_INVALID_TARGET;
+        const struct province *target=menu->pending_event.kind==CK2_EVENT_PROVINCE ?
+            province_by_id(&menu->provinces,menu->event_target_id) : NULL;
+        if (target) {
+            const size_t index=(size_t)(target-menu->provinces.provinces);
+            const struct map_province_facts *facts=index<menu->settlement_scene.province_fact_count?
+                &menu->settlement_scene.province_facts[index]:NULL;
+            const char *original=facts?(kind==CONVERSION_RELIGION?facts->religion:facts->culture):"";
+            status=conversion_province_set(&menu->conversion,&menu->conversion_catalog,
+                                            target->id,kind,effect->value,original);
+            if (status==CONVERSION_OK) {
+                conversion_replay_province(menu,target->id);
+                if (menu->selected==target) {
+                    conversion_selected_labels(menu);
+                    refresh_holding_style(menu);
+                }
+                conversion_map_refresh(menu);
+            }
+        } else if (menu->pending_event.kind==CK2_EVENT_CHARACTER) {
+            const struct ruler_profile *person=realm_ruler(&menu->realms,menu->campaign_ruler_id);
+            if (person) {
+                const char *original=kind==CONVERSION_RELIGION?person->religion_key:person->culture_key;
+                status=conversion_person_set(&menu->conversion,&menu->conversion_catalog,
+                                              person->id,kind,effect->value,original);
+                if (status==CONVERSION_OK) {
+                    conversion_replay_rulers(menu);
+                    conversion_map_refresh(menu);
+                    menu->character.ruler.id=0;
+                    if (menu->character.open) inspect_campaign_character(menu,
+                        realm_ruler(&menu->realms,menu->campaign_ruler_id));
+                }
+            }
+        }
+        if (status!=CONVERSION_OK && status!=CONVERSION_ALREADY_SAME) ++unsupported;
+    }
+    char message[220];
+    snprintf(message,sizeof message,"Event %.65s option %u: direct effects handled. %u unsupported/invalid effect(s)%s.",
+        menu->pending_event.id,selected,unsupported,option->conditional?"; conditional trigger not checked":"");
+    debug_console_output(&menu->console,message);
+    if (menu->pending_event.has_immediate)
+        debug_console_output(&menu->console,"Caution: immediate event effects were not executed.");
+    menu->event_open=false;
+}
+
+static bool parse_uint_arg(const char *text, unsigned *id)
+{
+    if (!text || !*text || !id) return false;
+    char *end;
+    errno = 0;
+    unsigned long n = strtoul(text, &end, 10);
+    while (*end == ' ') ++end;
+    if (errno || *end || n == 0 || n > UINT_MAX) return false;
+    *id = (unsigned)n;
+    return true;
+}
+
+static void warfare_console_command(struct menu *menu, struct debug_console_result command)
+{
+    char message[220] = {0};
+    unsigned first = 0, second = 0;
+    const struct province *province = NULL;
+    if (command.action == DEBUG_WAR_LIST) {
+        snprintf(message, sizeof message, "%zu wars; %zu armies; %zu occupied provinces",
+                 menu->warfare.war_count, menu->warfare.army_count, menu->warfare.occupation_count);
+        debug_console_output(&menu->console, message);
+        for (size_t i = 0; i < menu->warfare.army_count; ++i) {
+            const struct warfare_army *a = menu->warfare.armies + i;
+            snprintf(message, sizeof message, "Army %u: ruler %u, province %u, %u troops%s",
+                     a->id, a->ruler_id, a->province_id, a->troops,
+                     a->route ? " (moving)" : a->siege_days ? " (sieging)" : "");
+            debug_console_output(&menu->console, message);
+        }
+        for (size_t i = 0; i < menu->warfare.war_count; ++i) {
+            const struct warfare_war *w = menu->warfare.wars + i;
+            if (!w->active) continue;
+            snprintf(message, sizeof message, "WAR: ruler %u vs %u", w->attacker, w->defender);
+            debug_console_output(&menu->console, message);
+        }
+        return;
+    }
+    if (command.action == DEBUG_WAR_MARCH) {
+        char extra;
+        if (sscanf(command.argument, "%u %u %c", &first, &second, &extra) != 2 || !first || !second) {
+            debug_console_output(&menu->console, "Usage: march <army ID> <destination province ID>");
+            return;
+        }
+        if (!province_by_id(&menu->provinces, second)) {
+            debug_console_output(&menu->console, "Destination must be a valid land province.");
+            return;
+        }
+        const struct warfare_army *a = warfare_army(&menu->warfare, first);
+        if (!a || a->ruler_id != menu->campaign_ruler_id) {
+            debug_console_output(&menu->console, "Only your own armies can receive march orders.");
+            return;
+        }
+        if (!menu->warfare_graph.head &&
+            !warfare_graph_from_map(&menu->warfare_graph, &menu->provinces)) {
+            debug_console_output(&menu->console, "Couldn't build land adjacency from CK2 provinces.bmp.");
+            return;
+        }
+        enum warfare_status status = warfare_march(&menu->warfare, &menu->warfare_graph, first, second);
+        snprintf(message, sizeof message, "March army %u -> %u: %s", first, second,
+                 warfare_status_text(status));
+    } else if (command.action == DEBUG_WAR_DISBAND) {
+        if (!parse_uint_arg(command.argument, &first)) {
+            debug_console_output(&menu->console, "Usage: disband <army ID>"); return;
+        }
+        struct warfare_army *a = warfare_army(&menu->warfare, first);
+        enum warfare_status status = a && a->ruler_id == menu->campaign_ruler_id ?
+            warfare_disband(&menu->warfare, first) : WARFARE_NO_ARMY;
+        snprintf(message, sizeof message, "Disband army %u: %s", first, warfare_status_text(status));
+    } else if (command.action == DEBUG_WAR_DECLARE || command.action == DEBUG_WAR_PEACE) {
+        if (!parse_uint_arg(command.argument, &first) || first == menu->campaign_ruler_id) {
+            debug_console_output(&menu->console, "Usage: declarewar/peace <other ruler ID>"); return;
+        }
+        if (command.action == DEBUG_WAR_DECLARE && !realm_ruler(&menu->realms, first)) {
+            debug_console_output(&menu->console, "Target ruler not found in dated title history."); return;
+        }
+        const enum warfare_status status = command.action == DEBUG_WAR_DECLARE ?
+            warfare_declare(&menu->warfare, menu->campaign_ruler_id, first) :
+            warfare_peace(&menu->warfare, menu->campaign_ruler_id, first);
+        snprintf(message, sizeof message, "%s ruler %u: %s%s",
+                 command.action == DEBUG_WAR_DECLARE ? "Declare war on" : "Peace with", first,
+                 warfare_status_text(status), status == WARFARE_OK ?
+                 " (prototype: no CB, peace demands or title transfer)" : "");
+    } else if (command.action == DEBUG_WAR_RAISE || command.action == DEBUG_WAR_RAISE_ENEMY) {
+        if (*command.argument) {
+            if (!parse_uint_arg(command.argument, &first)) {
+                debug_console_output(&menu->console, "Usage: raise [province ID] / raiseenemy <province ID>"); return;
+            }
+            province = province_by_id(&menu->provinces, first);
+        } else province = menu->selected;
+        if (!province) {
+            debug_console_output(&menu->console, "Select a land province or supply its numeric ID."); return;
+        }
+        struct realm_province_ownership owners;
+        if (!realm_province_ownership(&menu->realms,
+                    (size_t)(province - menu->provinces.provinces), &owners) ||
+            !owners.has_county || !owners.has_independent) {
+            debug_console_output(&menu->console, "Title history has no known county and realm holder."); return;
+        }
+        const unsigned ruler = command.action == DEBUG_WAR_RAISE ?
+            menu->campaign_ruler_id : owners.independent.holder;
+        if (command.action == DEBUG_WAR_RAISE && owners.county.holder != ruler) {
+            debug_console_output(&menu->console, "You can only raise directly held counties in this version."); return;
+        }
+        if (command.action == DEBUG_WAR_RAISE_ENEMY &&
+            !warfare_hostile(&menu->warfare, menu->campaign_ruler_id, ruler)) {
+            debug_console_output(&menu->console, "Enemy independent ruler must be at war with you."); return;
+        }
+        struct county_holdings county = {0};
+        holdings_load(&county, menu->asset_root, province, menu->start_date);
+        construction_settlement_apply(&menu->construction, province->id, &county);
+        double troops = 0;
+        bool known = false;
+        for (size_t h = 0; h < county.count; ++h) {
+            struct levy_potential v;
+            if (construction_holding_levy(&menu->construction, county.slots + h, &v)) {
+                troops += v.total;
+                known = true;
+            }
+        }
+        if (!known || troops < 1) {
+            debug_console_output(&menu->console, "No troop definitions available for this county."); return;
+        }
+        unsigned army_id = 0;
+        unsigned amount = troops > UINT_MAX ? UINT_MAX : (unsigned)troops;
+        enum warfare_status status = warfare_raise(&menu->warfare, ruler, province->id, amount, &army_id);
+        snprintf(message, sizeof message, "Raise from %u (ruler %u): %s; army %u, %u potential troops",
+                 province->id, ruler, warfare_status_text(status), army_id, amount);
+    }
+    if (message[0]) debug_console_output(&menu->console, message);
+}
+
+/* Console-selected hereditary laws use candidate records from CK2 bookmark
+ * character history plus explicitly born runtime children. Unknown people,
+ * election votes and gender permissions must not be guessed. */
+struct succession_preview {
+    struct ruler_profile *profiles;
+    struct ck2_heir_candidate *candidates;
+    size_t count;
+};
+static void succession_preview_free(struct succession_preview *p)
+{
+    free(p->profiles);free(p->candidates);*p=(struct succession_preview){0};
+}
+static bool succession_preview_build(struct menu *menu,const struct ruler_profile *dead,
+                                     struct succession_preview *preview)
+{
+    enum { LIMIT=256 };
+    unsigned history_children[LIMIT]={0},history_siblings[LIMIT]={0};
+    if (!menu || !dead || !preview) return false;
+    rulers_family_ids(menu->asset_root,dead,menu->campaign.date,
+                      history_children,LIMIT,history_siblings,LIMIT);
+    unsigned runtime_ids[LIMIT]={0};
+    const size_t runtime_count=family_gameplay_children(&menu->family,dead->id,runtime_ids,LIMIT);
+    unsigned ids[LIMIT]={0};size_t total=0;
+    for (size_t group=0;group<3;++group) {
+        const unsigned *source=group==0 ? history_children : group==1 ? runtime_ids : history_siblings;
+        const size_t limit=group==1 ? (runtime_count<LIMIT ? runtime_count:LIMIT) : LIMIT;
+        for (size_t j=0;j<limit;++j) {
+            const unsigned id=source[j];if (!id || id==dead->id) continue;
+            bool seen=false;
+            for (size_t k=0;k<total;++k) seen|=ids[k]==id;
+            if (!seen && total<LIMIT) ids[total++]=id;
+        }
+    }
+    if (!total) return true;
+    preview->profiles=calloc(total,sizeof(*preview->profiles));
+    preview->candidates=calloc(total,sizeof(*preview->candidates));
+    if (!preview->profiles || !preview->candidates) {
+        succession_preview_free(preview);return false;
+    }
+    for (size_t i=0;i<total;++i) preview->profiles[i].id=ids[i];
+    rulers_load(preview->profiles,total,menu->asset_root,menu->campaign.date);
+    for (size_t i=0;i<total;++i) {
+        const struct ruler_profile *r=family_gameplay_find(&menu->family,ids[i]);
+        if (!r) r=realm_ruler(&menu->realms,ids[i]);
+        if (r) preview->profiles[i]=*r;
+        r=&preview->profiles[i];
+        preview->candidates[i]=(struct ck2_heir_candidate){
+            .id=r->id,.father=r->father,.mother=r->mother,.dynasty_id=r->dynasty_id,
+            .age=r->age,.age_known=r->age_known,.female=r->female,.alive=!r->deceased};
+    }
+    preview->count=total;
+    return true;
+}
+static size_t succession_order(struct menu *menu,const struct ruler_profile *dead,
+                              struct succession_preview *preview,unsigned *heirs,size_t max)
+{
+    const struct ck2_law *inheritance=ck2_law_selected(&menu->active_laws,&menu->law_catalog,"succession");
+    const struct ck2_law *gender=ck2_law_selected(&menu->active_laws,&menu->law_catalog,"gender_succession");
+    if (!inheritance || !gender || !dead) return 0;
+    if (!succession_preview_build(menu,dead,preview)) return 0;
+    return ck2_succession_divide(ck2_law_succession_mode(inheritance),
+        ck2_law_gender_mode(gender),dead->id,dead->dynasty_id,
+        preview->candidates,preview->count,heirs,max);
+}
+static bool succession_transfer(struct menu *menu,struct ruler_profile dead)
+{
+    const struct government_definition *gov=government_find(
+        &menu->settlement_scene.governments,dead.government_key);
+    if (!government_uses_hereditary_succession(gov)) {
+        debug_console_output(&menu->console,
+            "Government succession is non-hereditary: patrician elections / clerical appointment not yet simulated; titles left unchanged.");
+        return false;
+    }
+    struct succession_preview preview={0};
+    unsigned heirs[64]={0};
+    const size_t nh=succession_order(menu,&dead,&preview,heirs,SDL_arraysize(heirs));
+    if (!nh) {
+        debug_console_output(&menu->console,"Succession unresolved: set a supported succession and gender law, with an eligible heir.");
+        succession_preview_free(&preview);return false;
+    }
+    const size_t nt=realm_held_title_count(&menu->realms,dead.id);
+    if (!nt || nt>10000) {
+        debug_console_output(&menu->console,"Succession halted: title count is unavailable or exceeds safety limit.");
+        succession_preview_free(&preview);return false;
+    }
+    /* Check before mutation that every heir can be represented in realm history. */
+    bool okay=true;
+    for (size_t i=0;i<nh && okay;++i) {
+        const struct ruler_profile *heir=realm_ruler(&menu->realms,heirs[i]);
+        if (!heir) {
+            for (size_t j=0;j<preview.count;++j)
+                if (preview.profiles[j].id==heirs[i]) {
+                    okay=realm_register_runtime_ruler(&menu->realms,&preview.profiles[j]);break;
+                }
+        }
+        okay=okay && realm_ruler(&menu->realms,heirs[i])!=NULL;
+    }
+    if (!okay) {succession_preview_free(&preview);return false;}
+    const size_t transferred=realm_runtime_inherit_titles(&menu->realms,dead.id,heirs,nh);
+    if (transferred==nt) {
+        char line[200];
+        snprintf(line,sizeof line,"Succession: %zu titles inherited by %zu heir(s); player now character %u.",
+                 transferred,nh,heirs[0]);
+        debug_console_output(&menu->console,line);
+        menu->campaign_ruler_id=heirs[0];
+        menu->campaign_ruler=NULL;
+        menu->character.ruler.id=0;
+        const struct ruler_profile *new_ruler=realm_ruler(&menu->realms,heirs[0]);
+        if (new_ruler) {
+            SDL_DestroyTexture(menu->campaign_portrait);
+            menu->campaign_portrait=setup_character_portrait(menu,new_ruler);
+        }
+        struct realm_title_info principal;
+        if (realm_primary_title(&menu->realms,heirs[0],&principal)) {
+            SDL_DestroyTexture(menu->campaign_title_shield);
+            menu->campaign_title_shield=era_title_shield(menu->renderer,menu->asset_root,
+                                    principal.id,new_ruler ? new_ruler->religion_key : "");
+            if (province_by_id(&menu->provinces,principal.capital))
+                menu->home_province=principal.capital;
+        }
+        (void)government_refresh_player(menu);
+        if (economy_snapshot_build(&menu->economy,menu->asset_root,&menu->provinces,
+            &menu->realms,&menu->construction,heirs[0],menu->start_date)==0) {
+            refresh_law_income(menu);
+            menu->campaign.demesne_count=menu->economy.direct_count;
+            menu->campaign.monthly_prestige=menu->economy.monthly_prestige;
+            menu->campaign.monthly_piety=menu->economy.monthly_piety;
+        }
+        if (menu->realms_visible && realm_map_build(&menu->realms,menu->renderer,
+                menu->asset_root,&menu->provinces,&menu->campaign_map,menu->start_date)<0)
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,"Realm graphics refresh after succession failed");
+        conversion_map_refresh(menu);
+        if (menu->selected) {
+            const struct province *selected=menu->selected;
+            menu->selected=NULL;
+            select_province(menu,selected);
+        }
+    } else debug_console_output(&menu->console,"Succession incomplete; title ownership requires review.");
+    succession_preview_free(&preview);
+    return transferred==nt;
+}
+static void law_console_command(struct menu *menu,struct debug_console_result result)
+{
+    char line[220];
+    if (result.action==DEBUG_LAW_LIST) {
+        if (result.argument[0]) {
+            size_t found=0;
+            for (size_t i=0;i<menu->law_catalog.count && found<9;++i) {
+                const struct ck2_law *law=&menu->law_catalog.items[i];
+                if (strcmp(law->group,result.argument)) continue;
+                snprintf(line,sizeof line,"%s%s",law->key,
+                    ck2_law_selected(&menu->active_laws,&menu->law_catalog,law->group)==law ? " [selected]":"");
+                debug_console_output(&menu->console,line);++found;
+            }
+            if (!found) debug_console_output(&menu->console,"Unknown group or no authored law entries.");
+        } else {
+            debug_console_output(&menu->console,"Laws: use 'laws <group>' then 'setlaw <key>' (DEV override; not a CK2 council vote).");
+            static const char *const groups[]={"succession","gender_succession","feudal_tax","city_tax",
+                "temple_tax","tax_levy_law_feudal","tax_levy_law_republic","tax_levy_law_theocracy",
+                "crown_authority","centralization"};
+            for (size_t i=0;i<SDL_arraysize(groups);++i) {
+                const struct ck2_law *law=ck2_law_selected(&menu->active_laws,&menu->law_catalog,groups[i]);
+                snprintf(line,sizeof line,"%s: %s",groups[i],law ? law->key : "unresolved (historical law not loaded)");
+                debug_console_output(&menu->console,line);
+            }
+        }
+    } else if (result.action==DEBUG_LAW_SET) {
+        const struct ck2_law *law=ck2_law_find(&menu->law_catalog,result.argument);
+        const struct ruler_profile *r=realm_ruler(&menu->realms,menu->campaign_ruler_id);
+        const struct government_definition *gov=r ? government_find(
+            &menu->settlement_scene.governments,r->government_key) : NULL;
+        if (law && !government_allows_law_group(gov,law->group)) {
+            debug_console_output(&menu->console,
+                "This government forbids that law family; election/clerical succession is not yet implemented.");
+            return;
+        }
+        if (law && ck2_law_select(&menu->active_laws,&menu->law_catalog,result.argument)) {
+            if (government_refresh_player(menu)) {
+                if (menu->map_modes.selected==MAP_MODE_GOVERNMENTS) conversion_map_refresh(menu);
+                if (menu->character.open) {
+                    const struct ruler_profile *ruler=realm_ruler(&menu->realms,menu->character.ruler.id);
+                    menu->character.ruler.id=0; /* Force cached panel to rebind government. */
+                    if (ruler) inspect_campaign_character(menu,ruler);
+                }
+            }
+            refresh_law_income(menu);
+            snprintf(line,sizeof line,"Selected %s (%s). Developer override; CK2 potential/allow not evaluated.",law->key,law->group);
+        } else snprintf(line,sizeof line,"No CK2 law named '%.85s' in installed law files.",result.argument);
+        debug_console_output(&menu->console,line);
+    } else if (result.action==DEBUG_LAW_TAXES) {
+        snprintf(line,sizeof line,"Direct %.2f + modeled vassal %.2f = %.2f gold/year (%.2f/month).",
+            menu->economy.annual_direct_tax,menu->economy.annual_law_vassal_tax,
+            menu->economy.annual_direct_tax+menu->economy.annual_law_vassal_tax,
+            menu->campaign.monthly_tax);
+        debug_console_output(&menu->console,line);
+        snprintf(line,sizeof line,"Vassal holdings %zu, unresolved tax %u; excludes exemptions and opinion modifiers.",
+            menu->economy.vassal_count,menu->economy.vassal_tax_skipped);
+        debug_console_output(&menu->console,line);
+    } else if (result.action==DEBUG_LAW_HEIR) {
+        const struct ruler_profile *dead=family_gameplay_find(&menu->family,menu->campaign_ruler_id);
+        if (!dead) dead=realm_ruler(&menu->realms,menu->campaign_ruler_id);
+        struct succession_preview preview={0};unsigned heirs[32]={0};
+        const size_t n=succession_order(menu,dead,&preview,heirs,SDL_arraysize(heirs));
+        if (!n) debug_console_output(&menu->console,"No verified heir under selected hereditary and gender laws (or laws unset).");
+        else {
+            snprintf(line,sizeof line,"Projected first heir: %u; %zu eligible direct heirs (preview, not CK2 voting).",heirs[0],n);
+            debug_console_output(&menu->console,line);
+        }
+        succession_preview_free(&preview);
+    }
+}
+
+/* Script-based election diagnostics: reveal the loaded CK2 voting rule, never
+ * substitute ordinary hereditary heirs or fabricate a winning ballot. */
+static void election_console_command(struct menu *menu,struct debug_console_result command)
+{
+    char line[220];
+    const struct ck2_law *law=ck2_law_selected(&menu->active_laws,
+                                               &menu->law_catalog,"succession");
+    if (!law) {
+        debug_console_output(&menu->console,"Succession law unresolved: no dated law or developer selection.");
+        return;
+    }
+    if (!law->election_voting_rules[0]) {
+        snprintf(line,sizeof line,"%s has no indexed elective voting_rules assignment.",law->key);
+        debug_console_output(&menu->console,line);
+        return;
+    }
+    const struct ck2_election_rule *rule=ck2_election_find(&menu->election_catalog,
+                                                             law->election_voting_rules);
+    if (!rule) {
+        snprintf(line,sizeof line,"Missing CK2 succession_voting script: %s",law->election_voting_rules);
+        debug_console_output(&menu->console,line);
+        return;
+    }
+    if (command.action==DEBUG_ELECTION_CANDIDATE) {
+        unsigned id=0;
+        if (!parse_uint_arg(command.argument,&id) || !id) {
+            debug_console_output(&menu->console,"Usage: electioncandidate <character ID>");return;
+        }
+        const struct ruler_profile *r=family_gameplay_find(&menu->family,id);
+        if (!r) r=realm_ruler(&menu->realms,id);
+        struct ruler_profile history={0};
+        if (!r) {
+            history.id=id;rulers_load(&history,1,menu->asset_root,menu->campaign.date);
+            if (history.name[0]) r=&history;
+        }
+        if (!r) {
+            debug_console_output(&menu->console,"Unknown character. No verified eligibility.");return;
+        }
+        const unsigned holder=menu->campaign_ruler_id;
+        if (r->deceased) {
+            snprintf(line,sizeof line,"Character %u is dead; cannot stand for election.",id);
+        } else {
+            const struct ruler_profile *current=realm_ruler(&menu->realms,holder);
+            const char *candidate_traits[RULER_TRAIT_LIMIT]={0};
+            const char *holder_traits[RULER_TRAIT_LIMIT]={0};
+            for (size_t i=0;i<r->trait_count && i<RULER_TRAIT_LIMIT;++i)
+                candidate_traits[i]=r->traits[i];
+            if (current) for (size_t i=0;i<current->trait_count && i<RULER_TRAIT_LIMIT;++i)
+                holder_traits[i]=current->traits[i];
+            struct ck2_election_candidate ctx={
+                .ruler_id=holder,.candidate_id=id,
+                .ruler_traits=holder_traits,.ruler_trait_count=current ? current->trait_count : 0,
+                .candidate_traits=candidate_traits,.candidate_trait_count=r->trait_count
+            };
+            const enum ck2_election_truth verdict=ck2_election_candidate_trigger(rule,&ctx);
+            if (verdict==CK2_ELECTION_FALSE)
+                snprintf(line,sizeof line,"Character %u (%s): REJECTED by a proven CK2 candidate-trigger condition.",
+                         id,r->name);
+            else snprintf(line,sizeof line,"Character %u (%s): CK2 election eligibility UNRESOLVED.",id,r->name);
+        }
+        debug_console_output(&menu->console,line);
+        debug_console_output(&menu->console,"CK2 checks claims/kinship, council/army offices, injuries, realm, religion and other triggers.");
+        return;
+    }
+    snprintf(line,sizeof line,"%s: base_type=%s; voting_rules=%s",
+             law->key,law->election_base_type[0] ? law->election_base_type : "unspecified",
+             rule->id);
+    debug_console_output(&menu->console,line);
+    static const char *const names[]={"Elector selection","Elector vote strength",
+                                       "Candidate preference","Candidate eligibility"};
+    for (int i=0;i<CK2_ELECTION_SECTION_COUNT;++i) {
+        if (!rule->script[i]) {
+            snprintf(line,sizeof line,"%s: absent in installed CK2 scripts",names[i]);
+        } else if (rule->has_base_days[i]) {
+            snprintf(line,sizeof line,"%s: authored base %d, %u modifiers (not evaluated)",
+                     names[i],rule->base_days[i],rule->modifier_count[i]);
+        } else {
+            snprintf(line,sizeof line,"%s: script loaded, %u modifiers; dynamic conditions unresolved",
+                     names[i],rule->modifier_count[i]);
+        }
+        debug_console_output(&menu->console,line);
+    }
+    if (rule->has_max_electors) {
+        snprintf(line,sizeof line,"Authored maximum electors: %d",rule->max_electors);
+        debug_console_output(&menu->console,line);
+    }
+    char offices[24][64]={{0}};
+    size_t office_count=ck2_election_office_keys(rule,offices,SDL_arraysize(offices));
+    if (office_count) {
+        snprintf(line,sizeof line,"Original voter offices: %zu job/minor-title types (not assigned yet).",office_count);
+        debug_console_output(&menu->console,line);
+        for (size_t i=0;i<office_count && i<SDL_arraysize(offices);i+=4) {
+            size_t at=0;
+            line[0]=0;
+            for (size_t j=i;j<office_count && j<i+4 && j<SDL_arraysize(offices);++j) {
+                const int n=snprintf(line+at,sizeof line-at,"%s%s",j==i ? "" : ", ",offices[j]);
+                if (n<0 || (size_t)n>=sizeof line-at) break;
+                at+=(size_t)n;
+            }
+            debug_console_output(&menu->console,line);
+        }
+    }
+    debug_console_output(&menu->console,"No elected successor calculated: votes, council offices and eligibility require script evaluation.");
+}
+
+/* Character lifecycle is separate from historic title grants and succession. */
+static void character_lifecycle_command(struct menu *menu, struct debug_console_result command)
+{
+    const struct ruler_profile *original = realm_ruler(&menu->realms, menu->campaign_ruler_id);
+    const struct ruler_profile *player = original ?
+        family_gameplay_find(&menu->family, original->id) : NULL;
+    if (!player) player = original;
+    if (!player) { debug_console_output(&menu->console, "No playable character."); return; }
+    if (command.action == DEBUG_CHAR_DEATH) {
+        unsigned target_id;
+        if (!parse_uint_arg(command.argument, &target_id)) {
+            debug_console_output(&menu->console, "Usage: die <character ID>"); return;
+        }
+        const struct ruler_profile *target = family_gameplay_find(&menu->family, target_id);
+        if (!target) target = realm_ruler(&menu->realms, target_id);
+        struct ruler_profile other = {0};
+        if (!target) {
+            other.id = target_id;
+            rulers_load(&other, 1, menu->asset_root, menu->start_date);
+            if (other.name[0]) target = &other;
+        }
+        /* A death may realloc family.people; never retain a pointer into it. */
+        const struct ruler_profile deceased_before_death = *player;
+        enum family_status status = target ? family_gameplay_death(&menu->family, target, menu->campaign.date)
+                                           : FAMILY_NO_PERSON;
+        debug_console_output(&menu->console, family_status_description(status));
+        if (status == FAMILY_OK) {
+            if (menu->character.open) {
+                menu->character.ruler.id = 0;
+                inspect_campaign_character(menu, realm_ruler(&menu->realms, menu->campaign_ruler_id));
+            }
+            if (target_id == menu->campaign_ruler_id) {
+                if (!succession_transfer(menu,deceased_before_death))
+                    debug_console_output(&menu->console,"Ruler dead; titles remain unchanged until inheritance is supported.");
+            } else debug_console_output(&menu->console,"Non-player death recorded; AI title succession remains unresolved.");
+        }
+        return;
+    }
+    unsigned spouse_id = player->spouse;
+    const struct ruler_profile *spouse = family_gameplay_find(&menu->family, spouse_id);
+    if (!spouse) spouse = realm_ruler(&menu->realms, spouse_id);
+    struct ruler_profile unlanded = {0};
+    if (!spouse && spouse_id) {
+        unlanded.id = spouse_id;
+        rulers_load(&unlanded, 1, menu->asset_root, menu->start_date);
+        if (unlanded.name[0]) spouse = &unlanded;
+    }
+    enum family_status status = FAMILY_NOT_PARTNERS;
+    unsigned newborn = 0;
+    if (spouse) {
+        if (!family_gameplay_find(&menu->family, player->id) ||
+            !family_gameplay_find(&menu->family, spouse->id))
+            status = family_gameplay_import_marriage(&menu->family, player, spouse);
+        else status = FAMILY_OK;
+        if (status == FAMILY_OK)
+            status = family_gameplay_birth(&menu->family, player, spouse,
+                                           menu->campaign.date, &newborn);
+    }
+    char line[200];
+    snprintf(line, sizeof line, "Birth: %s (new character ID %u)",
+             family_status_description(status), newborn);
+    debug_console_output(&menu->console, line);
+    if (status == FAMILY_OK) name_runtime_newborn(menu, newborn);
+    if (status == FAMILY_OK && menu->character.open) {
+        menu->character.ruler.id = 0;
+        inspect_campaign_character(menu, original);
+    }
+}
+
+/* The native checkpoint is deliberately restricted to the currently loaded
+ * bookmark. It is not CK2 save-file interoperability and cannot bootstrap
+ * a different historical setup from the main menu. */
+static bool checkpoint_slot_path(char *path, size_t capacity, const char *raw)
+{
+    const char *slot = raw && *raw ? raw : "quick";
+    const size_t length = strlen(slot);
+    if (!length || length > 32) return false;
+    for (size_t i = 0; i < length; ++i)
+        if (!isalnum((unsigned char)slot[i]) && slot[i] != '-' && slot[i] != '_')
+            return false;
+    char *prefs = SDL_GetPrefPath("OpenCK2", "OpenCK2");
+    if (!prefs) return false;
+    const int written = snprintf(path, capacity, "%s%s.ocks", prefs, slot);
+    SDL_free(prefs);
+    return written > 0 && (size_t)written < capacity;
+}
+
+static bool checkpoint_is_compatible(const struct menu *menu,
+                                     const struct openck2_checkpoint *state,
+                                     char *reason, size_t capacity)
+{
+    if (state->bookmark.year != menu->start_date.year ||
+        state->bookmark.month != menu->start_date.month ||
+        state->bookmark.day != menu->start_date.day ||
+        state->bookmark_ruler != menu->campaign_start_ruler_id) {
+        snprintf(reason, capacity, "Save belongs to another bookmark or starting ruler.");
+        return false;
+    }
+    if (!construction_checkpoint_valid(&menu->construction, &state->construction)) {
+        snprintf(reason, capacity, "Save references missing or incompatible building definitions.");
+        return false;
+    }
+    for (size_t i = 0; i < state->laws.count; ++i) {
+        const struct ck2_active_law *entry = &state->laws.chosen[i];
+        const struct ck2_law *law = ck2_law_find(&menu->law_catalog, entry->key);
+        if (!law || strcmp(entry->group, law->group)) {
+            snprintf(reason, capacity, "Save references a missing or reassigned law.");
+            return false;
+        }
+    }
+    for (size_t i = 0; i < state->title_count; ++i) {
+        const struct realm_title_override *entry = state->titles + i;
+        struct realm_title_info info;
+        if (!realm_title_info(&menu->realms, entry->id, &info) ||
+            (entry->owner && !realm_ruler(&menu->realms, entry->owner) &&
+             !family_gameplay_find(&state->family, entry->owner))) {
+            snprintf(reason, capacity, "Save references an unknown title or heir.");
+            return false;
+        }
+    }
+    if (!realm_ruler(&menu->realms, state->player) &&
+        !family_gameplay_find(&state->family, state->player)) {
+        snprintf(reason, capacity, "Save references an unknown playable character.");
+        return false;
+    }
+    if (state->home_province && !province_by_id(&menu->provinces, state->home_province)) {
+        snprintf(reason, capacity, "Saved home province is absent from this map.");
+        return false;
+    }
+    for (size_t i = 0; i < state->conversion.province_count; ++i) {
+        const struct conversion_province *p = &state->conversion.provinces[i];
+        if (!province_by_id(&menu->provinces, p->id) ||
+            (p->has_religion && !conversion_catalog_has(&menu->conversion_catalog, CONVERSION_RELIGION, p->religion)) ||
+            (p->has_culture && !conversion_catalog_has(&menu->conversion_catalog, CONVERSION_CULTURE, p->culture))) {
+            snprintf(reason, capacity, "Saved province conversion is incompatible with mounted CK2 files.");
+            return false;
+        }
+    }
+    for (size_t i = 0; i < state->conversion.person_count; ++i) {
+        const struct conversion_person *p = &state->conversion.people[i];
+        if ((p->has_religion && !conversion_catalog_has(&menu->conversion_catalog, CONVERSION_RELIGION, p->religion)) ||
+            (p->has_culture && !conversion_catalog_has(&menu->conversion_catalog, CONVERSION_CULTURE, p->culture))) {
+            snprintf(reason, capacity, "Saved character conversion uses unavailable definitions.");
+            return false;
+        }
+    }
+    for (size_t i = 0; i < state->warfare.army_count; ++i) {
+        const struct warfare_army *army = state->warfare.armies + i;
+        if (!province_by_id(&menu->provinces, army->province_id) ||
+            (army->target && !province_by_id(&menu->provinces, army->target))) {
+            snprintf(reason, capacity, "Saved army references a missing province.");
+            return false;
+        }
+        for (size_t j = 0; j < army->route_count; ++j) {
+            if (!province_by_id(&menu->provinces, army->route[j]) ||
+                (j && !warfare_graph_adjacent(&menu->warfare_graph,
+                                              army->route[j-1], army->route[j]))) {
+                snprintf(reason, capacity, "Saved army route is incompatible with this map.");
+                return false;
+            }
+        }
+    }
+    if (!ck2_government_mechanics_valid(&state->governments)) {
+        snprintf(reason,capacity,"Saved government mechanics are malformed.");
+        return false;
+    }
+    for (size_t i=0;i<state->governments.clan_count;++i) {
+        if (!realm_ruler(&menu->realms,state->governments.clans[i].head) &&
+            !family_gameplay_find(&state->family,state->governments.clans[i].head)) {
+            snprintf(reason,capacity,"Saved nomad clan references a missing character.");return false;
+        }
+    }
+    for (size_t i=0;i<state->governments.family_count;++i) {
+        if (!realm_ruler(&menu->realms,state->governments.families[i].head) &&
+            !family_gameplay_find(&state->family,state->governments.families[i].head)) {
+            snprintf(reason,capacity,"Saved patrician family references a missing character.");return false;
+        }
+    }
+    for (size_t i=0;i<state->governments.post_count;++i) {
+        const struct ck2_trade_post *p=state->governments.posts+i;
+        if (!province_by_id(&menu->provinces,p->province)) {
+            snprintf(reason,capacity,"Saved trade post province is missing.");return false;
+        }
+        bool owner=false;
+        for (size_t j=0;j<state->governments.family_count;++j)
+            if (state->governments.families[j].head==p->patrician) owner=true;
+        if (!owner || (p->current_build[0] && !ck2_trade_find(&menu->trade_catalog,p->current_build))) {
+            snprintf(reason,capacity,"Saved trade post family or building is unavailable.");return false;
+        }
+        for (size_t j=0;j<p->completed_count;++j)
+            if (!ck2_trade_find(&menu->trade_catalog,p->completed[j])) {
+                snprintf(reason,capacity,"Saved trade post upgrade is missing.");return false;
+            }
+    }
+    for (size_t i=0;i<state->governments.bishop_count;++i) {
+        const struct ck2_bishop_nomination *b=state->governments.bishops+i;
+        struct realm_title_info title;
+        if (!realm_title_info(&menu->realms,b->temple,&title) ||
+            (!realm_ruler(&menu->realms,b->candidate) &&
+             !family_gameplay_find(&state->family,b->candidate))) {
+            snprintf(reason,capacity,"Saved investiture nomination is incompatible.");return false;
+        }
+    }
+    return true;
+}
+
+static void checkpoint_command(struct menu *menu, enum debug_console_action action,
+                               const char *slot)
+{
+    char path[2048], line[220];
+    if (!checkpoint_slot_path(path, sizeof path, slot)) {
+        debug_console_output(&menu->console, "Invalid slot: use 1-32 letters, numbers, _ or -.");
+        return;
+    }
+    if (action == DEBUG_CHECKPOINT_SAVE) {
+        struct openck2_checkpoint state = {
+            .bookmark = menu->start_date,
+            .bookmark_ruler = menu->campaign_start_ruler_id,
+            .player = menu->campaign_ruler_id,
+            .home_province = menu->home_province,
+            .campaign = menu->campaign,
+            .family = menu->family,
+            .conversion = menu->conversion,
+            .warfare = menu->warfare,
+            .laws = menu->active_laws,
+            .governments = menu->government_mechanics
+        };
+        if (!construction_checkpoint_capture(&menu->construction, &state.construction)) {
+            debug_console_output(&menu->console, "Save failed: cannot capture construction state.");
+            return;
+        }
+        state.title_count = realm_runtime_title_overrides(&menu->realms, NULL, 0);
+        bool ok = true;
+        if (state.title_count) {
+            state.titles = calloc(state.title_count, sizeof *state.titles);
+            ok = state.titles && realm_runtime_title_overrides(&menu->realms,
+                                                state.titles, state.title_count) == state.title_count;
+        }
+        if (ok) ok = checkpoint_write(path, &state);
+        if (!ok) snprintf(line, sizeof line, "Save failed: %s", checkpoint_last_error());
+        else snprintf(line, sizeof line, "Saved native OpenCK2 checkpoint '%s' (not CK2 format).",
+                      slot && *slot ? slot : "quick");
+        debug_console_output(&menu->console, line);
+        /* Shallow system state is owned by menu, only these captures belong here. */
+        construction_checkpoint_free(&state.construction);
+        free(state.titles);
+        return;
+    }
+    struct openck2_checkpoint loaded = {0};
+    if (!checkpoint_read(path, &loaded)) {
+        snprintf(line, sizeof line, "Load failed: %s", checkpoint_last_error());
+        debug_console_output(&menu->console, line);
+        return;
+    }
+    char reason[160] = {0};
+    if (!checkpoint_is_compatible(menu, &loaded, reason, sizeof reason)) {
+        debug_console_output(&menu->console, reason);
+        checkpoint_free(&loaded);
+        return;
+    }
+    /* Restore construction first: it preallocates all replacements before
+     * changing live projects. Historical CK2 assets remain read-only. */
+    if (!construction_checkpoint_restore(&menu->construction, &loaded.construction)) {
+        debug_console_output(&menu->console, "Load failed allocating construction state.");
+        checkpoint_free(&loaded);
+        return;
+    }
+    bool ok = true;
+    for (size_t i = 0; ok && i < loaded.family.count; ++i)
+        ok = realm_register_runtime_ruler(&menu->realms, &loaded.family.people[i].profile);
+    if (ok) ok = realm_runtime_title_overrides_restore(&menu->realms,
+                                                        loaded.titles, loaded.title_count);
+    if (!ok) {
+        /* The source bookmark is still valid; the runtime game must not
+         * claim a successful restore after an allocation/validation failure. */
+        debug_console_output(&menu->console, "Checkpoint title restoration failed; reload campaign before retrying.");
+        checkpoint_free(&loaded);
+        return;
+    }
+    family_gameplay_free(&menu->family);
+    conversion_state_free(&menu->conversion);
+    warfare_state_free(&menu->warfare);
+    ck2_law_state_free(&menu->active_laws);
+    menu->family = loaded.family;
+    menu->conversion = loaded.conversion;
+    menu->warfare = loaded.warfare;
+    menu->active_laws = loaded.laws;
+    menu->government_mechanics = loaded.governments;
+    loaded.family = (struct family_gameplay){0};
+    loaded.conversion = (struct conversion_state){0};
+    loaded.warfare = (struct warfare_state){0};
+    loaded.laws = (struct ck2_law_state){0};
+    menu->campaign = loaded.campaign;
+    menu->campaign_ruler_id = loaded.player;
+    menu->home_province = loaded.home_province;
+    menu->time_running = false;
+    menu->event_open = false;
+    menu->character.open = false;
+    menu->character.ruler.id = 0;
+    menu->campaign_ruler = NULL; /* Previous bookmark pointer may be stale after succession. */
+    const struct ruler_profile *current = realm_ruler(&menu->realms, menu->campaign_ruler_id);
+    SDL_DestroyTexture(menu->campaign_portrait);
+    menu->campaign_portrait = current ? setup_character_portrait(menu, current) : NULL;
+    (void)government_refresh_player(menu);
+    if (economy_snapshot_build(&menu->economy, menu->asset_root, &menu->provinces,
+                               &menu->realms, &menu->construction, menu->campaign_ruler_id,
+                               menu->start_date) == 0) refresh_law_income(menu);
+    map_theme_free(&menu->map_theme);
+    map_title_shields_clear(menu);
+    SDL_DestroyTexture(menu->campaign_title_shield);
+    menu->campaign_title_shield = NULL;
+    struct realm_title_info primary;
+    if (current && realm_primary_title(&menu->realms, menu->campaign_ruler_id, &primary))
+        menu->campaign_title_shield = era_title_shield(menu->renderer, menu->asset_root,
+                                                       primary.id, current->religion_key);
+    if (menu->realms_visible && realm_map_build(&menu->realms, menu->renderer,
+            menu->asset_root, &menu->provinces, &menu->campaign_map, menu->start_date) < 0)
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Realm overlay rebuild after load failed");
+    conversion_map_refresh(menu);
+    menu->selected = NULL;
+    menu->holding_province = 0;
+    select_province(menu, province_by_id(&menu->provinces, menu->home_province));
+    checkpoint_free(&loaded);
+    snprintf(line, sizeof line, "Loaded checkpoint '%s'; simulation paused.",
+             slot && *slot ? slot : "quick");
+    debug_console_output(&menu->console, line);
+}
+
+/* Government gameplay diagnostics and guarded developer actions. CK2 assets
+ * remain read-only. These are not substitutes for character interactions,
+ * elections, the Republic trade interface or the Investiture screens. */
+static void government_mechanics_console(struct menu *menu, struct debug_console_result cmd)
+{
+    struct ck2_government_mechanics *s=&menu->government_mechanics;
+    const struct ck2_government_rules *r=&menu->government_rules;
+    char line[220];
+    enum ck2_government_action status=CK2_GOV_INVALID;
+    unsigned id=0, other=0, province=0;
+    double amount=0;
+    char tail=0, key[72]={0};
+    switch (cmd.action) {
+    case DEBUG_GOV_CLANS:
+        snprintf(line,sizeof line,"Nomad clans %zu/%u (population progression provisional).",
+                 s->clan_count,r->max_clans);
+        debug_console_output(&menu->console,line);
+        for (size_t i=0;i<s->clan_count;++i) {
+            const struct ck2_nomad_clan *c=s->clans+i;
+            snprintf(line,sizeof line,"Clan %u: provinces %u, pop %.0f/%.0f, max manpower %.0f",
+                     c->head,c->provinces,c->population,c->capacity,c->manpower);
+            debug_console_output(&menu->console,line);
+        }
+        return;
+    case DEBUG_GOV_CLAN_REGISTER: {
+        unsigned provinces=0;
+        if (sscanf(cmd.argument,"%u %u %lf %c",&id,&provinces,&amount,&tail)!=3 ||
+            !id || !provinces || !isfinite(amount)) {
+            debug_console_output(&menu->console,"Usage: clanregister <nomadic ruler ID> <provinces> <population capacity>");return;
+        }
+        const struct ruler_profile *p=realm_ruler(&menu->realms,id);
+        if (!p || strcmp(p->government_key,"nomadic_government")) {
+            debug_console_output(&menu->console,"The character must have a verified nomadic government.");return;
+        }
+        const size_t title_count=realm_held_titles(&menu->realms,id,NULL,0);
+        if (!title_count || title_count>50000) {
+            debug_console_output(&menu->console,"No bounded title index for this nomadic ruler.");return;
+        }
+        struct realm_title_info *titles=calloc(title_count,sizeof *titles);
+        if (!titles) { debug_console_output(&menu->console,"Out of memory indexing clan counties.");return; }
+        const size_t read=realm_held_titles(&menu->realms,id,titles,title_count);
+        unsigned counties=0;
+        for (size_t i=0;i<read && i<title_count;++i)
+            if (titles[i].id[0]=='c' && titles[i].id[1]=='_') ++counties;
+        free(titles);
+        if (!counties || provinces>counties) {
+            debug_console_output(&menu->console,"Registered county count cannot exceed verified personal county titles.");return;
+        }
+        status=ck2_nomad_add(s,r,id,provinces,amount);
+        if (status==CK2_GOV_OK)
+            debug_console_output(&menu->console,"Registered clan using the provided population capacity; land allocation remains unmodeled.");
+        break;
+    }
+    case DEBUG_GOV_CLAN_SPLIT: {
+        unsigned counties=0; double population=0;
+        if (sscanf(cmd.argument,"%u %u %u %lf %c",&id,&other,&counties,&population,&tail)!=4) {
+            debug_console_output(&menu->console,"Usage: clansplit <old head> <new head> <counties> <population>");return;
+        }
+        const struct ruler_profile *p=realm_ruler(&menu->realms,other);
+        if (!p) p=family_gameplay_find(&menu->family,other);
+        if (!p || p->deceased) {
+            debug_console_output(&menu->console,"The new clan head must be a known living character.");return;
+        }
+        status=ck2_nomad_split(s,r,id,other,counties,population);
+        if (status==CK2_GOV_OK)
+            debug_console_output(&menu->console,"Clan population divided; clan-title grants still require the title system.");
+        break;
+    }
+    case DEBUG_GOV_FAMILIES:
+    case DEBUG_GOV_DOGE_FORECAST: {
+        snprintf(line,sizeof line,"Patrician families %zu/%u; Respect excludes CK2 random/uncalculated election modifiers.",
+                 s->family_count,r->max_patricians);
+        debug_console_output(&menu->console,line);
+        unsigned ages[CK2_PATRICIAN_LIMIT]={0};
+        double prestige[CK2_PATRICIAN_LIMIT]={0};
+        bool known[CK2_PATRICIAN_LIMIT]={0};
+        for (size_t i=0;i<s->family_count;++i) {
+            const struct ck2_patrician_family *f=s->families+i;
+            const struct ruler_profile *p=family_gameplay_find(&menu->family,f->head);
+            if (!p) p=realm_ruler(&menu->realms,f->head);
+            const bool known_prestige=p && (p->known_resources & (1u<<RULER_PRESTIGE));
+            ages[i]=p ? p->age : 0;
+            prestige[i]=known_prestige ? p->resources[RULER_PRESTIGE] : 0;
+            if (f->head==menu->campaign_ruler_id) prestige[i]=menu->campaign.prestige;
+            known[i]=p && p->age_known && (known_prestige || f->head==menu->campaign_ruler_id) && !p->deceased;
+            double respect=0;
+            const bool computed=known[i] && ck2_patrician_respect(r,ages[i],prestige[i],f->campaign_fund,&respect);
+            snprintf(line,sizeof line,"Family head %u, fund %.0f, Respect subtotal %s",
+                     f->head,f->campaign_fund,computed ? "computed (see dogeforecast)" : "unresolved");
+            debug_console_output(&menu->console,line);
+            if (cmd.action==DEBUG_GOV_DOGE_FORECAST && computed) {
+                snprintf(line,sizeof line,"  %u: age %u, prestige %.0f, subtotal %.0f",
+                         f->head,ages[i],prestige[i],respect);
+                debug_console_output(&menu->console,line);
+            }
+        }
+        if (cmd.action==DEBUG_GOV_DOGE_FORECAST) {
+            const unsigned leader=ck2_patrician_respect_leader(s,r,ages,prestige,known);
+            snprintf(line,sizeof line,leader ?
+                "Highest known Respect subtotal: %u (NOT the elected Doge)" :
+                "No complete, unique Respect-subtotal leader (election unresolved).",leader);
+            debug_console_output(&menu->console,line);
+        }
+        return;
+    }
+    case DEBUG_GOV_FAMILY_REGISTER: {
+        if (!parse_uint_arg(cmd.argument,&id)) {
+            debug_console_output(&menu->console,"Usage: patricianadd <merchant republic ruler ID>");return;
+        }
+        const struct ruler_profile *p=realm_ruler(&menu->realms,id);
+        if (!p || strcmp(p->government_key,"merchant_republic_government")) {
+            debug_console_output(&menu->console,"Requires recorded merchant-republic government; patrician potential not fully evaluated.");return;
+        }
+        status=ck2_patrician_add(s,r,id);
+        break;
+    }
+    case DEBUG_GOV_FUND: {
+        unsigned gold=0;
+        if (!parse_uint_arg(cmd.argument,&gold)||gold>menu->campaign.treasury) {
+            debug_console_output(&menu->console,"Usage: campaignfund <positive gold amount affordable by player>");return;
+        }
+        status=ck2_patrician_fund(s,menu->campaign_ruler_id,gold);
+        if (status==CK2_GOV_OK) menu->campaign.treasury-=gold;
+        break;
+    }
+    case DEBUG_GOV_TRADEPOSTS:
+        snprintf(line,sizeof line,"Trade posts: %zu. Construction requires a port anchor in original CK2 map/positions.txt.",s->post_count);
+        debug_console_output(&menu->console,line);
+        for (size_t i=0;i<s->post_count;++i) {
+            const struct ck2_trade_post *p=s->posts+i;
+            snprintf(line,sizeof line,"Trade post %u, family %u, value %.1f, build %s (%u days)",
+                p->province,p->patrician,ck2_trade_value(p,&menu->trade_catalog),
+                p->current_build[0]?p->current_build:"none",p->days_left);
+            debug_console_output(&menu->console,line);
+        }
+        return;
+    case DEBUG_GOV_TRADE_BUILD: {
+        if (sscanf(cmd.argument,"%u %71s %c",&province,key,&tail)!=2) {
+            debug_console_output(&menu->console,"Usage: tradebuild <province ID> <CK2 building key>");return;
+        }
+        /* Only tr_port_X is currently proven to have the simple authored
+         * 'port=yes; patrician=yes; tech=0' construction condition. */
+        if ((strncmp(key,"tr_port_",8) && strncmp(key,"tr_enclave_",11)) ||
+            !province_by_id(&menu->provinces,province)) {
+            debug_console_output(&menu->console,"Only original tr_port_* or tr_enclave_* buildings in known provinces are supported.");return;
+        }
+        const struct ck2_trade_building *building=ck2_trade_find(&menu->trade_catalog,key);
+        if (!building || !building->has_cost || !building->has_days ||
+            building->gold_cost>menu->campaign.treasury) {
+            debug_console_output(&menu->console,"Trade post building missing or insufficient treasury.");return;
+        }
+        char *source=load_data(menu->asset_root,"map/positions.txt");
+        struct map_positions pos={0};
+        const bool indexed=source&&map_positions_parse(&pos,source);
+        const struct map_position *anchor=indexed?map_position_find(&pos,province):NULL;
+        const bool port=anchor&&anchor->authored_port;
+        map_positions_destroy(&pos);SDL_free(source);
+        status=ck2_trade_build(s,&menu->trade_catalog,menu->campaign_ruler_id,
+                               province,key,port,&amount);
+        if (status==CK2_GOV_OK) {
+            menu->campaign.treasury-=(unsigned)ceil(amount);
+            refresh_law_income(menu);
+            snprintf(line,sizeof line,"Started %s at province %u for %.0f gold (authored cost/days).",key,province,amount);
+            debug_console_output(&menu->console,line);
+        }
+        break;
+    }
+    case DEBUG_GOV_BISHOP_LIST:
+        snprintf(line,sizeof line,"Bishop nominations %zu; appointments require an eligible temple vacancy.",s->bishop_count);
+        debug_console_output(&menu->console,line);
+        for (size_t i=0;i<s->bishop_count;++i) {
+            const struct ck2_bishop_nomination *b=s->bishops+i;
+            snprintf(line,sizeof line,"%s: candidate %u, %s, approved %s",b->temple,b->candidate,
+                     b->papal_approval_required?"papal":"free investiture",b->approved?"yes":"no");
+            debug_console_output(&menu->console,line);
+        }
+        return;
+    case DEBUG_GOV_BISHOP_NOMINATE: {
+        if (sscanf(cmd.argument,"%71s %u %c",key,&id,&tail)!=2) {
+            debug_console_output(&menu->console,"Usage: bishopnominate <b_temple_title> <candidate ID>");return;
+        }
+        const struct ck2_law *law=ck2_law_selected(&menu->active_laws,&menu->law_catalog,"investiture_law");
+        struct realm_title_info title,county;
+        if (!law || !realm_title_info(&menu->realms,key,&title) ||
+            !realm_dejure_parent_info(&menu->realms,key,&county) ||
+            !realm_title_info(&menu->realms,county.id,&county)) {
+            debug_console_output(&menu->console,"Investiture law or temple/de jure county is unresolved.");return;
+        }
+        bool temple=false;
+        for (size_t i=0;i<menu->settlement_scene.holding_evidence_count;++i) {
+            const struct government_holding_evidence *e=menu->settlement_scene.holding_evidence+i;
+            if (!strcmp(e->title_id,key) && e->holding_bit==GOVERNMENT_TEMPLE) temple=true;
+        }
+        if (!temple || county.holder!=menu->campaign_ruler_id) {
+            debug_console_output(&menu->console,"Temple ownership and the player's county jurisdiction must be verified.");return;
+        }
+        const struct ruler_profile *p=family_gameplay_find(&menu->family,id);
+        if (!p) p=realm_ruler(&menu->realms,id);
+        struct ruler_profile external={0};
+        if (!p) { external.id=id; rulers_load(&external,1,menu->asset_root,menu->start_date);
+            if (external.name[0]) p=&external;
+        }
+        if (!p || p->deceased || !p->age_known || p->age<16 ||
+            (strcmp(p->religion_key,"catholic") && strcmp(p->religion_key,"fraticelli"))) {
+            debug_console_output(&menu->console,"Candidate must be a known living adult Catholic/Fraticelli character.");return;
+        }
+        const struct government_religion *faith=government_religion_find(
+            &menu->settlement_scene.religions,p->religion_key);
+        if (!faith || (p->female ? !faith->female_temple : !faith->male_temple)) {
+            debug_console_output(&menu->console,"Candidate fails the original religion's temple-holder restrictions.");return;
+        }
+        status=ck2_bishop_nominate(s,key,menu->campaign_ruler_id,id,law->key);
+        if (status==CK2_GOV_OK)
+            debug_console_output(&menu->console,"Nomination queued; title is NOT transferred until approval and vacancy.");
+        break;
+    }
+    case DEBUG_GOV_BISHOP_APPROVE: {
+        if (sscanf(cmd.argument,"%71s %c",key,&tail)!=1) {
+            debug_console_output(&menu->console,"Usage: bishopapprove <b_temple_title> (manual papal approval in debug)");return;
+        }
+        struct ck2_bishop_nomination *nom=NULL;
+        for (size_t i=0;i<s->bishop_count;++i)
+            if (!strcmp(key,s->bishops[i].temple)) nom=s->bishops+i;
+        struct realm_title_info existing;
+        if (!nom || !realm_title_info(&menu->realms,key,&existing)) {
+            debug_console_output(&menu->console,"No nominated known temple title.");return;
+        }
+        const struct ruler_profile *holder=family_gameplay_find(&menu->family,existing.holder);
+        if (!holder) holder=realm_ruler(&menu->realms,existing.holder);
+        if (existing.holder && holder && !holder->deceased &&
+            !family_gameplay_death_date(&menu->family,existing.holder)) {
+            debug_console_output(&menu->console,"The current bishop is alive. Nomination remains queued until vacancy.");return;
+        }
+        if (nom->approved || existing.holder==nom->candidate) {
+            debug_console_output(&menu->console,"Nomination already approved or candidate already holds temple.");return;
+        }
+        /* Do not mark a nomination approved before title transfer succeeds.
+         * A failed registration or title update must leave the nomination
+         * retryable instead of persisting a false appointment. */
+        {
+            struct ruler_profile candidate={.id=nom->candidate};
+            const struct ruler_profile *known=family_gameplay_find(&menu->family,nom->candidate);
+            if (!known) known=realm_ruler(&menu->realms,nom->candidate);
+            if (!known) { rulers_load(&candidate,1,menu->asset_root,menu->start_date); known=&candidate; }
+            if (!known->name[0] || !realm_register_runtime_ruler(&menu->realms,known) ||
+                !realm_transfer_runtime_title(&menu->realms,key,existing.holder,nom->candidate)) {
+                debug_console_output(&menu->console,"Temple transfer failed; nomination remains pending.");return;
+            }
+            status=ck2_bishop_approve(s,key,true); /* explicit debug approval, NOT papal AI */
+            if (status!=CK2_GOV_OK) {
+                debug_console_output(&menu->console,"Temple transfer succeeded but approval bookkeeping failed.");return;
+            }
+            snprintf(line,sizeof line,"Bishop %u appointed to %s by developer approval (not papal AI).",nom->candidate,key);
+            debug_console_output(&menu->console,line);
+            menu->character.ruler.id=0;
+            map_theme_free(&menu->map_theme);
+            if (menu->realms_visible && realm_map_build(&menu->realms,menu->renderer,
+                  menu->asset_root,&menu->provinces,&menu->campaign_map,menu->start_date)<0)
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,"Realm overlay rebuild after bishop appointment failed");
+            conversion_map_refresh(menu);
+        }
+        break;
+    }
+    default: return;
+    }
+    if (status!=CK2_GOV_OK) debug_console_output(&menu->console,ck2_government_action_text(status));
+}
+
 static void submit_console_command(struct menu *menu, SDL_Window *window)
 {
     char date[80], ruler[128];
@@ -3421,6 +5659,9 @@ static void submit_console_command(struct menu *menu, SDL_Window *window)
         .prestige = menu->campaign.prestige,
         .piety = menu->campaign.piety
     };
+    double potential = 0;
+    context.has_levy = province_potential_levy(menu, &potential, NULL);
+    context.levy_potential = potential;
     if (!menu->console.input[0]) return;
     char command[180];
     snprintf(command, sizeof command, "> %.127s", menu->console.input);
@@ -3428,14 +5669,157 @@ static void submit_console_command(struct menu *menu, SDL_Window *window)
     const struct debug_console_result result = debug_console_execute(&menu->console,
                                                                       menu->console.input, &context);
     menu->console.input[0] = '\0';
-    if (result.action == DEBUG_SET_MAP_MODE) {
+    if (result.action == DEBUG_CHECKPOINT_SAVE || result.action == DEBUG_CHECKPOINT_LOAD) {
+        checkpoint_command(menu, result.action, result.argument);
+    } else if (result.action >= DEBUG_GOV_CLANS && result.action <= DEBUG_GOV_BISHOP_LIST) {
+        government_mechanics_console(menu,result);
+    } else if (result.action == DEBUG_GOVERNMENT_STATUS) {
+        unsigned id=menu->campaign_ruler_id;
+        if (result.argument[0] && (!parse_uint_arg(result.argument,&id) || !id)) {
+            debug_console_output(&menu->console,"Usage: government [landed ruler ID]");
+        } else {
+            const struct ruler_profile *ruler=realm_ruler(&menu->realms,id);
+            struct realm_title_info primary;
+            if (!ruler || !realm_primary_title(&menu->realms,id,&primary))
+                debug_console_output(&menu->console,"Ruler not present in dated title history.");
+            else {
+                char line[220];
+                const struct government_definition *gov=government_find(
+                    &menu->settlement_scene.governments,ruler->government_key);
+                snprintf(line,sizeof line,"Ruler %u (%s), primary title %s: %s",
+                    id,ruler->name,primary.id,gov ? gov->id :
+                    ruler->government_key[0] ? ruler->government_key : "unresolved");
+                debug_console_output(&menu->console,line);
+                snprintf(line,sizeof line,"Source: %s. %s",
+                    ruler->government_inferred ?
+                        (!strcmp(ruler->government_key,"roman_imperial_government") ?
+                         "original Roman imperial potential" :
+                         "owned holding; eligibility script incomplete") :
+                    ruler->government_key[0] ? "character history" : "unresolved",
+                    gov && gov->color_defined ? "CK2 government definition loaded." :
+                    "No authenticated government color/definition.");
+                debug_console_output(&menu->console,line);
+                if (gov) {
+                    snprintf(line,sizeof line,
+                        "Gov rules: preferred=0x%x; holdings=%s; hereditary=%s; gender laws=%s; tax exemptions=%zu",
+                        gov->preferred_holdings,
+                        government_can_found_holding(gov) ? "permitted/unknown" : "forbidden",
+                        government_uses_hereditary_succession(gov) ? "allowed/unknown" : "not modeled",
+                        gov->have_gender_laws_defined ?
+                            (gov->have_gender_laws ? "yes" : "no") : "unknown",
+                        gov->no_vassal_tax.count);
+                    debug_console_output(&menu->console,line);
+                }
+            }
+        }
+    } else if (result.action == DEBUG_ELECTION_STATUS || result.action == DEBUG_ELECTION_CANDIDATE) {
+        election_console_command(menu,result);
+    } else if (result.action >= DEBUG_LAW_LIST && result.action <= DEBUG_LAW_TAXES) {
+        law_console_command(menu,result);
+    } else if (result.action == DEBUG_CHAR_BIRTH || result.action == DEBUG_CHAR_DEATH) {
+        character_lifecycle_command(menu, result);
+    } else if (result.action >= DEBUG_WAR_DECLARE && result.action <= DEBUG_WAR_LIST) {
+        warfare_console_command(menu, result);
+    } else if (result.action == DEBUG_FIRE_EVENT) {
+        (void)scripted_event_open(menu,result.argument);
+    } else if (result.action == DEBUG_CHOOSE_EVENT) {
+        char *end=NULL;
+        errno=0;
+        unsigned long option=strtoul(result.argument,&end,10);
+        while (end && *end==' ') ++end;
+        if (errno || !end || *end || !option || option>CK2_EVENT_OPTIONS_MAX)
+            debug_console_output(&menu->console,"Usage: eventchoose <1-8>");
+        else scripted_event_choose(menu,(unsigned)option);
+    } else if (result.action == DEBUG_CLOSE_EVENT) {
+        menu->event_open=false;
+        debug_console_output(&menu->console,"Event dismissed.");
+    } else if (result.action == DEBUG_SET_MAP_MODE) {
         int mode = -1;
-        if (!SDL_strcasecmp(result.argument, "terrain")) mode = MAP_MODE_TERRAIN;
-        if (!SDL_strcasecmp(result.argument, "realms")) mode = MAP_MODE_REALMS;
-        if (mode < 0) debug_console_output(&menu->console, "Only Terrain and Realms are implemented.");
+        for (int i = 0; i < MAP_MODE_COUNT; ++i) {
+            const struct map_mode_definition *definition = map_mode_definition(i);
+            const char *widget = definition->widget;
+            const char *name = !strncmp(widget, "mapmode_", 8) ? widget + 8 : widget;
+            if (!SDL_strcasecmp(result.argument, name) ||
+                !SDL_strcasecmp(result.argument, definition->label)) {
+                mode = i;
+                break;
+            }
+        }
+        if (mode < 0 || !map_mode_definition(mode)->implemented)
+            debug_console_output(&menu->console, "Unknown or unsupported map mode.");
         else {
             select_campaign_mode(menu, window, mode);
-            debug_console_output(&menu->console, mode == MAP_MODE_TERRAIN ? "Terrain selected." : "Realms selected.");
+            debug_console_output(&menu->console,
+                (int)menu->map_modes.selected == mode ? "Map mode selected." : "Map mode unavailable.");
+        }
+    } else if (result.action >= DEBUG_SET_PROVINCE_RELIGION &&
+               result.action <= DEBUG_CONVERSION_STATUS) {
+        conversion_command(menu, result);
+    } else if (result.action == DEBUG_FAMILY || result.action == DEBUG_MARRY ||
+               result.action == DEBUG_MARRY_MATRI || result.action == DEBUG_CONCEIVE ||
+               result.action == DEBUG_DIVORCE) {
+        const struct ruler_profile *original = realm_ruler(&menu->realms, menu->campaign_ruler_id);
+        const struct ruler_profile *player = family_gameplay_find(&menu->family, menu->campaign_ruler_id);
+        if (!player) player = original;
+        if (!player) {
+            debug_console_output(&menu->console, "No playable ruler profile is available.");
+        } else if (result.action == DEBUG_FAMILY) {
+            char message[180];
+            const size_t count = family_gameplay_children(&menu->family, player->id, NULL, 0);
+            snprintf(message, sizeof message, "Ruler %u: spouse %u; %zu runtime children; %u total births.",
+                     player->id, player->spouse, count, menu->family.births);
+            debug_console_output(&menu->console, message);
+        } else if (result.action == DEBUG_MARRY || result.action == DEBUG_MARRY_MATRI) {
+            char *endptr;
+            errno = 0;
+            unsigned long raw_id = strtoul(result.argument, &endptr, 10);
+            while (*endptr == ' ') ++endptr;
+            const bool valid_id = !errno && !*endptr && raw_id > 0 && raw_id <= UINT_MAX;
+            const struct ruler_profile *target = valid_id ?
+                realm_ruler(&menu->realms, (unsigned)raw_id) : NULL;
+            if (!target && valid_id) target = family_gameplay_find(&menu->family, (unsigned)raw_id);
+            /* A marriage candidate need not hold a title. Load that specific
+             * ID through the same CK2 character-history parser as portraits. */
+            struct ruler_profile unlanded = {0};
+            if (!target && valid_id) {
+                unlanded.id = (unsigned)raw_id;
+                rulers_load(&unlanded, 1, menu->asset_root, menu->start_date);
+                if (unlanded.name[0] && unlanded.age_known) target = &unlanded;
+            }
+            enum family_status status = family_gameplay_marriage_type(&menu->family, player, target,
+                                              result.action == DEBUG_MARRY_MATRI);
+            debug_console_output(&menu->console, family_status_description(status));
+            if (status == FAMILY_OK && menu->character.open) {
+                menu->character.ruler.id = 0;
+                inspect_campaign_character(menu, original);
+            }
+        } else {
+            const unsigned spouse_id = player->spouse;
+            const struct ruler_profile *spouse = family_gameplay_find(&menu->family, spouse_id);
+            if (!spouse) spouse = realm_ruler(&menu->realms, spouse_id);
+            struct ruler_profile unlanded = {0};
+            if (!spouse && spouse_id) {
+                unlanded.id = spouse_id;
+                rulers_load(&unlanded, 1, menu->asset_root, menu->start_date);
+                if (unlanded.name[0] && unlanded.age_known) spouse = &unlanded;
+            }
+            enum family_status status = FAMILY_NOT_PARTNERS;
+            if (spouse && result.action == DEBUG_CONCEIVE) {
+                if (!family_gameplay_find(&menu->family, player->id) ||
+                    !family_gameplay_find(&menu->family, spouse->id))
+                    status = family_gameplay_import_marriage(&menu->family, player, spouse);
+                else status = FAMILY_OK;
+                if (status == FAMILY_OK)
+                    status = family_gameplay_conceive(&menu->family, player, spouse,
+                                                     menu->campaign.date);
+            } else if (spouse && result.action == DEBUG_DIVORCE) {
+                status = family_gameplay_divorce(&menu->family, player->id, spouse_id);
+                if (status == FAMILY_OK && menu->character.open) {
+                menu->character.ruler.id = 0;
+                inspect_campaign_character(menu, original);
+            }
+            }
+            debug_console_output(&menu->console, family_status_description(status));
         }
     } else if (result.action == DEBUG_LIST_TECH) {
         if (!menu->technology.loaded && technology_view_load(&menu->technology, menu->renderer,
@@ -3489,6 +5873,8 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
         if (menu->console.open) {
             tree_view_close(&menu->genealogy);
             menu->technology.open = false;
+            menu->bloodlines.open = false;
+            menu->wonder.open = false;
             SDL_StartTextInput();
         } else SDL_StopTextInput();
         return;
@@ -3516,6 +5902,51 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
                 if (!event->key.repeat) submit_console_command(menu, window);
                 break;
             default: break;
+            }
+        }
+        return;
+    }
+    /* The bloodline browser is modal, including mouse-wheel scrolling. */
+    if (menu->screen == CAMPAIGN && menu->bloodlines.open && event->type != SDL_QUIT) {
+        if (event->type == SDL_KEYDOWN && !event->key.repeat &&
+            event->key.keysym.sym == SDLK_ESCAPE) menu->bloodlines.open = false;
+        else if (event->type == SDL_MOUSEWHEEL) {
+            const int direction = event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1 : 1;
+            bloodline_view_scroll(&menu->bloodlines, event->wheel.y * direction,
+                                  menu->pointer, menu->renderer, menu->asset_root);
+        } else if (event->type == SDL_MOUSEBUTTONUP && event->button.button == SDL_BUTTON_LEFT)
+            bloodline_view_click(&menu->bloodlines,
+                                 (SDL_Point){event->button.x, event->button.y});
+        else if (event->type == SDL_MOUSEMOTION)
+            menu->pointer = (SDL_Point){event->motion.x, event->motion.y};
+        return;
+    }
+    /* Great Works overlays the map and all HUD buttons. Handle its controls
+     * before map modes or province input, preventing click-through. */
+    if (menu->screen == CAMPAIGN && menu->wonder.open && event->type != SDL_QUIT) {
+        if (event->type == SDL_KEYDOWN && !event->key.repeat &&
+            event->key.keysym.sym == SDLK_ESCAPE) menu->wonder.open = false;
+        else if (event->type == SDL_MOUSEBUTTONUP && event->button.button == SDL_BUTTON_LEFT)
+            (void)campaign_wonder_click(menu, (SDL_Point){event->button.x, event->button.y});
+        else if (event->type == SDL_MOUSEMOTION)
+            menu->pointer = (SDL_Point){event->motion.x, event->motion.y};
+        return;
+    }
+    /* Event popup is modal while open.  The developer console may still be
+     * reopened using backtick to execute eventchoose/eventclose. */
+    if (menu->screen == CAMPAIGN && menu->event_open && event->type != SDL_QUIT) {
+        if (event->type == SDL_KEYDOWN && !event->key.repeat) {
+            if (event->key.keysym.sym == SDLK_ESCAPE) menu->event_open=false;
+            else if (event->key.keysym.sym>=SDLK_1 && event->key.keysym.sym<=SDLK_8)
+                scripted_event_choose(menu,(unsigned)(event->key.keysym.sym-SDLK_1+1));
+        } else if (event->type == SDL_MOUSEBUTTONUP && event->button.button==SDL_BUTTON_LEFT) {
+            SDL_Point point={event->button.x,event->button.y};
+            for (size_t i=0;i<menu->pending_event.option_count;i++) {
+                SDL_Rect hit=scripted_option_rect(i);
+                if (SDL_PointInRect(&point,&hit)) {
+                    scripted_event_choose(menu,(unsigned)(i+1));
+                    break;
+                }
             }
         }
         return;
@@ -3643,6 +6074,11 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
                 break;
             if (menu->screen == CAMPAIGN) {
                 const SDL_Point point = {x, y};
+                if (campaign_hud_ui_next_song_hit(&menu->hud_ui, point)) {
+                    if (!menu_music_next(&menu->music, menu->asset_root))
+                        SDL_Log("Next song: no playable CK2 music file available");
+                    break;
+                }
                 const int mode = campaign_hud_ui_mode_hit(&menu->hud_ui, point);
                 if (mode >= 0) {
                     select_campaign_mode(menu, window, mode);
@@ -3656,12 +6092,20 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
                 /* Other original tabs remain visible, but cannot click through. */
                 if (nav >= 0) break;
             }
-            SDL_Point point = {event->button.x, event->button.y};
             if (menu->screen == CAMPAIGN && menu->selected && !menu->character.open &&
                 !menu->building_open && !menu->wonder.open &&
                 menu->province_close.area.w > 0 &&
                 SDL_PointInRect(&(SDL_Point){x, y}, &menu->province_close.area)) {
                 select_province(menu, NULL);
+                break;
+            }
+            /* The original province Raise Levies button now calls the same
+             * guarded gameplay path as the console. No background map click. */
+            if (menu->screen == CAMPAIGN && menu->selected && !menu->character.open &&
+                !menu->building_open && !menu->wonder.open &&
+                menu->province_skin.raise_levy.area.w > 0 &&
+                SDL_PointInRect(&(SDL_Point){x, y}, &menu->province_skin.raise_levy.area)) {
+                warfare_console_command(menu, (struct debug_console_result){.action = DEBUG_WAR_RAISE});
                 break;
             }
             if (menu->screen == CAMPAIGN &&
@@ -3897,6 +6341,13 @@ static int run_game(const char *root)
         const bool day_elapsed = menu.time_running && now >= menu.next_day;
         if (day_elapsed) {
             advance_campaign_day(&menu);
+            if (menu.screen == CAMPAIGN && menu.map_modes.selected == MAP_MODE_ECONOMY &&
+                !menu.map_theme.overlay) {
+                (void)map_theme_build(&menu.map_theme, renderer, &menu.campaign_map,
+                                      &menu.provinces, &menu.realms, &menu.settlement_scene,
+                                      &menu.construction, menu.asset_root, menu.start_date,
+                                      MAP_MODE_ECONOMY);
+            }
             menu.next_day = now + campaign_day_interval(menu.campaign_speed);
         }
         const bool content_changed = poll_content_settings(&menu, window);
@@ -3943,7 +6394,8 @@ cleanup:
     for (size_t i=0; i<SDL_arraysize(province_widgets); ++i)
         SDL_DestroyTexture(province_widgets[i]->texture);
     map_title_shields_clear(&menu);
-    SDL_DestroyTexture(menu.holding_owner_frame_texture);
+    for (size_t i = 0; i < SDL_arraysize(menu.holding_owner_frames); ++i)
+        SDL_DestroyTexture(menu.holding_owner_frames[i].texture);
     SDL_DestroyTexture(menu.province_title_shield);
     SDL_DestroyTexture(menu.campaign_title_shield);
     SDL_DestroyTexture(menu.campaign_portrait);
@@ -3951,11 +6403,23 @@ cleanup:
     rules_free(&menu.rules);
     map_settlements_free(&menu.settlement_scene);
     economy_snapshot_free(&menu.economy);
+    ck2_law_state_free(&menu.active_laws);
+    ck2_law_catalog_free(&menu.law_catalog);
+    ck2_elections_free(&menu.election_catalog);
+    map_theme_free(&menu.map_theme);
+    family_gameplay_free(&menu.family);
+    warfare_state_free(&menu.warfare);
+    warfare_graph_free(&menu.warfare_graph);
+    conversion_state_free(&menu.conversion);
+    conversion_catalog_free(&menu.conversion_catalog);
+    ck2_trade_catalog_free(&menu.trade_catalog);
     realm_map_free(&menu.realms);
     era_menu_free(&menu.era);
     setup_toolbar_free(&menu.toolbar);
     campaign_hud_ui_free(&menu.hud_ui);
     technology_view_free(&menu.technology);
+    bloodline_view_free(&menu.bloodlines);
+    free(menu.wonder.locations);
     tree_view_close(&menu.genealogy);
     SDL_StopTextInput();
     settings_free(&menu.settings);
@@ -3968,6 +6432,8 @@ cleanup:
     SDL_DestroyTexture(menu.wonder.terrain.texture);
     SDL_DestroyTexture(menu.wonder.frame.texture);
     SDL_DestroyTexture(menu.wonder.completed.texture);
+    SDL_DestroyTexture(menu.wonder.next.texture);
+    SDL_DestroyTexture(menu.wonder.previous.texture);
     for (size_t i = 0; i < SDL_arraysize(menu.topbar); ++i)
         SDL_DestroyTexture(menu.topbar[i].texture);
     SDL_DestroyTexture(menu.building_close);
