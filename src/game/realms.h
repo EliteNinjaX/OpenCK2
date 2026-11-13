@@ -32,6 +32,8 @@ struct realm_map {
 int realm_map_build(struct realm_map *, SDL_Renderer *, const char *, const struct province_map *,
                     const struct map_view *, struct campaign_date);
 bool realm_title_info(const struct realm_map *, const char *, struct realm_title_info *);
+/* De jure parent from common/landed_titles, distinct from dated liege history. */
+bool realm_dejure_parent_info(const struct realm_map *, const char *, struct realm_title_info *);
 size_t realm_held_titles(const struct realm_map *, unsigned, struct realm_title_info *, size_t);
 bool realm_primary_title(const struct realm_map *, unsigned holder, struct realm_title_info *);
 bool realm_vacant_barony(const struct realm_map *, const char *county,

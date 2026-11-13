@@ -17,6 +17,109 @@ This document replaces scattered progress reports, Qwen checkpoints, work plans,
 - Do not use historical progress documents as proof of runtime equivalence or of current source state. Re-run relevant Makefile targets and compare against the installed CK2 game.
 - Keep exact engine executable evidence under **EXE_RESEARCH.md**, not scattered implementation reports. Some archived reports below include context and links; the research document is the canonical executable-evidence record.
 
+
+## Province GUI and holding-art reconstruction (2026-11-12)
+
+**Baseline:** `OpenCK2_Province_View_C.zip`; the code remains **C17**.
+This update is a source-level reconstruction from `interface/province.gui`,
+`interface/province.gfx`, the actual OpenCK2 C implementation, original
+`common/religions` definitions, and side-by-side CK2 screenshots. It is **not**
+a recovered CK2 renderer or an in-game verified pixel-perfect clone.
+
+### Root causes traced and corrected
+
+1. The panel used the declared `province` window size (1024x224) as if it were
+   the visible panel, despite CK2 using an approximately 344px-wide, 624px-high
+   bottom-left art panel. The original `settlements_1_box` and
+   `settlements_2_box` are deliberately 520px wide to support an extended view.
+   Unclipped rendering let slots cover the map. `province_layout_core.c`
+   constrains the grid to the visible artwork (three entries per row) and
+   supplies the same hit and drawing origins. An SDL clip bounds the card
+   graphics. The original `capital_position` is independent of `province`;
+   row-box positions are children of `province`.
+2. **Populated settlements became black rectangles** because the original
+   `GFX_province_settlement_owner_frame` was rendered **after** the castle/city/
+   temple placeholder, covering the painting. Empty slots were unaffected.
+   It now draws as a backdrop **before** the settlement art. This ordering is
+   supported by the original `settlement_entry` and `capital_entry` widget order.
+3. The old panel showed custom diagnostic strings in CK2's portrait and
+   province statistics areas, instead of using the authored GUI positions.
+   Those strings have been replaced by the actual panel widgets, names,
+   hierarchy positions and original stat icons; unsupported values are omitted.
+4. The province close button used an undeclared `point` variable in the mouse
+   handler. That compiler error has been corrected.
+
+### Data-driven UI bindings
+
+- The panel background now loads `GFX_province_bg` via `province.gfx` and
+  draws to the original control span; the old `hud_province` is a fallback.
+- County holder portrait and original frame, county/title shield, top-liege
+  shield, province title, culture and religion labels, duke/kingdom hierarchy,
+  military and technology icons, tax icon, close button and settlement cards
+  use original GUI/GFX widget names.
+- Title hierarchy in the panel now calls `realm_dejure_parent_info()` to read
+  original `common/landed_titles` parentage, rather than assuming the changing
+  de facto liege is the same as the de jure Duke/King. Dynamic de jure drift
+  is not yet simulated.
+- For an occupied holding, the small owner crest is the title-history **holder's
+  primary landed title shield** (where a real texture exists), not an arbitrary
+  copy of the county shield. Missing historical holders do not receive an
+  invented crest.
+- `religion_gfx_core.c` resolves a religion's `graphical_culture` from the
+  original `common/religions` group/religion rules. Temple imagery selects
+  `GFX_settlement_temple_<province graphical culture>_<religion gfx>` with the
+  original western texture as fallback. Castle and city imagery continue using
+  the culture's registered placeholders.
+- A visible annual base-plus-built-holdings tax is calculated from the
+  existing economic catalog; **no fake levy, garrison, revolt risk, supply or
+  technology levels** are displayed. Those require their original simulation.
+
+### Validation
+
+- `make check-province-layout` — passed with `-Werror`. Verifies all settlement
+  origins remain in the panel; a deliberately narrow panel rejects overflow.
+- `make check-religion-gfx` — passed with `-Werror`. Validates inherited and
+  overridden religious graphical culture.
+- Original `common/religions/00_religions.txt` probe matched catholic/orthodox
+  `westerngfx`, sunni/shiite `muslimgfx`, norse `norsegfx`, Jewish `jewishgfx`.
+- Map-core, government, settlement, map-position, economy-construction,
+  technology/console, dynasty-arms, tree layout and title-prestige tests passed.
+- Changed C files passed targeted syntax checks with test-only SDL stand-ins
+  and `-Wall -Wextra -Wpedantic -Werror`, but these stand-ins cannot substitute
+  for a real SDL build or in-game visual inspection.
+
+### Remaining fidelity gaps
+
+- Exact texture size/scale and portrait/title crest placement need comparison
+  on Linux with the same resolution and bookmark as the CK2 reference.
+- Province panel extension variants, wonder/trade/fort/hospital sections,
+  special siege state, barony controller shields and hover interaction remain
+  incomplete. Original CK2 progress bars and levy numbers need a real troop
+  and military statistics model, not placeholder percentages.
+- CK2's exact province income, fort/garrison values, tech values, supply,
+  revolt risk, holding construction shading and province-level modifier icons
+  remain unimplemented. The shown annual tax is a limited base-income summary.
+- Dynamic title ownership, dejure drift, generated barony CoAs and per-holding
+  independent cultural change need further work.
+
+### Linux visual acceptance checklist
+
+```sh
+make -B game CFLAGS='-O2 -g -Werror'
+make check-province-layout check-religion-gfx check-map-core check-economy-construction
+```
+
+- Select Middlesex in 1337 and compare the ruler portrait, England/Essex
+  shields, county title, labels, and settlement artwork at the same resolution.
+- Confirm that **every populated** castle/city/temple has visible art (not just
+  vacant land) and that no holding card crosses into the map.
+- Check occupied and empty slots, tooltips and construction clicking: the
+  clickable hitboxes must coincide with the visible cards.
+- Repeat for Catholic, Muslim, Norse and Jewish temples and a different
+  graphical culture to check culture-and-religion-specific art.
+- Close the province panel and reopen it, switch counties, then complete a
+  building and verify the economic data and artwork remain consistent.
+
 ## C17 gameplay increment — founded holdings and construction income (2026-11-12)
 
 **Source baseline:** `OpenCK2_Tree_Layout_C.zip` (the latest prior released source archive).
@@ -826,3 +929,35 @@ Baseline: `OpenCK2_Localization_Trees_C.zip` (the latest project ZIP supplied in
 - The old GCC `-Wmissing-braces` initializer in `character_view.c` is corrected.
 - `make check-title-prestige`, `make check-economy-construction` and `make check-economy` passed in the isolated environment. SDL headers are unavailable here, so full game build and UI appearance are not verified.
 - **Next priorities:** proper character modifier aggregation (learning, diplomacy, piety and combat), piety from traits/buildings/religious modifiers, tooltip breakdown using localisation keys, live title ownership mutation and monthly ledger refresh. The original executable's `title.cpp` path reference and CK2 screenshots provide leads, **not recovered source code or proof of original formulas**.
+
+## Historical province-panel notes (merged from prior increment)
+
+
+
+- Province panel is only rendered when a province is selected. The map, ruler HUD, minimap, and map-mode controls remain visible when it is closed.
+- The close control is read from `interface/province.gui` (`province/button_close`), using `GFX_main_close_button` from `interface/generalstuff.gfx` where available.
+- Escape closes the province panel after higher-priority modal views have been dismissed. Clicking an unowned sea tile also clears the selection.
+- Clearing the selected province resets the holdings snapshot and highlighted province, preventing stale data from leaking into the next selection.
+- The holding renderer now tolerates missing culture-specific settlement artwork without dereferencing a null texture. It preserves the original GUI frame and its original `capital_entry`/`settlement_entry` offsets.
+
+### Original forward-looking backlog (some items addressed above)
+
+- Original holding owner/controller/realm heraldic shields for each barony; these are separate widgets in `province.gui` and require barony-level title/holder data.
+- Correct original province-panel text columns and icon data (levies, garrison, income, supply, revolts) instead of the current development text overlay.
+- Religion-specific temple artwork and precise per-holding culture selection (the current renderer uses province graphical culture).
+- The original GUI panel extensions, settlement progress bars and building level display.
+- Full graphical comparison at the same resolution, selection and bookmark; no SDL build is available in this environment.
+
+### Original Linux validation
+
+```sh
+make -B game CFLAGS='-O2 -g -Werror'
+make check-map-core check-economy-construction
+```
+
+1. Select a province; confirm its holdings panel opens.
+2. Click its close button; the map should remain visible without the province panel.
+3. Select another province; the new holdings and culture/religion must load.
+4. Press Escape once with the province panel open; it should close without leaving the campaign.
+5. Click the sea and confirm that the panel disappears.
+6. Verify that the empty slots retain their original frames and clicking an occupied slot still opens construction.

@@ -21,6 +21,8 @@
 #include "map_modes.h"
 #include "campaign_hud.h"
 #include "map_settlements.h"
+#include "province_layout_core.h"
+#include "religion_gfx_core.h"
 #include "economy.h"
 #include "technology_view.h"
 #include "debug_console.h"
@@ -132,6 +134,24 @@ struct wonder_panel {
     bool damaged, open;
 };
 
+/* Cached source-GUI widgets and historic title graphics for the selected province. */
+struct province_panel_skin {
+    struct setup_widget background;
+    struct setup_widget portrait_frame, county_crown, region_info, raise_levy,
+                        raise_ships, temple_button, capital_icon;
+    struct setup_widget levy_progress_bg;
+    struct setup_widget garrison_icon, levy_icon, tech_icons[3], tax_icon,
+                        strait_icon, route_icon, crown_focus;
+    SDL_Rect ruler_portrait, name, kingdom, duchy, culture, religion,
+             kingdom_shield, duchy_shield, owner_shield[2][3],
+             tax_amount, supply_label, revolt_label, culture_label,
+             religion_label, tech_amount[3];
+    SDL_Texture *portrait, *kingdom_flag, *duchy_flag, *independent_flag,
+                *barony_flags[HOLDING_LIMIT];
+    struct province_layout grid;
+    bool loaded;
+};
+
 struct menu {
     struct menu_music music;
     struct settings settings;
@@ -191,12 +211,13 @@ struct menu {
     SDL_Cursor *game_cursor;
     SDL_Rect holding_panel, holding_rows[2], holding_capital, holding_templates[2];
     struct setup_widget province_close;
+    struct province_panel_skin province_skin;
     SDL_Rect holding_art_area[2], holding_frame_area[2], holding_owner_frame_area[2];
     bool holding_owner_frame_valid[2];
     SDL_Texture *holding_owner_frame_texture;
     SDL_Texture *styled_holding_art[HOLDING_TYPE_COUNT];
-    SDL_Texture *styled_holding_frame;
-    char holding_style_key[64];
+    SDL_Texture *styled_holding_frame, *styled_holding_capital;
+    char holding_style_key[160];
     float holding_art_scale[2];
     bool holding_layout_ready;
     unsigned holding_province;
@@ -233,9 +254,9 @@ static bool campaign_map_interactive(const struct menu *menu, SDL_Point point)
         return false;
     if (menu->selected && !menu->character.open &&
         point.x >= menu->holding_panel.x &&
-        point.x < menu->holding_panel.x + 345 &&
+        point.x < menu->holding_panel.x + menu->holding_panel.w &&
         point.y >= menu->holding_panel.y &&
-        point.y < HEIGHT)
+        point.y < menu->holding_panel.y + menu->holding_panel.h)
         return false;
     /* Both developer controls also occupy map coordinates; they must
      * block province selection and right-click owner navigation. */
@@ -695,6 +716,26 @@ static void draw_wonder(SDL_Renderer *renderer, const struct menu_assets *assets
                   wonder->description_area.y + wonder->description_area.h + 34);
 }
 
+/* Return GUI coordinates as SDL rectangles but distinguish widget-local
+ * template offsets from viewport-relative positions.  The CK2 province
+ * window's declared 1024-wide list is intentionally wider than its sprite. */
+static bool province_bind_rect(const struct frontend_gui *gui, int parent,
+                               const char *name, SDL_Rect *rect)
+{
+    return frontend_gui_rect(gui, frontend_gui_find(gui, parent, name),
+                             (SDL_Point){WIDTH, HEIGHT}, rect);
+}
+
+static void province_bind_widget(struct menu *menu, const struct frontend_gui *gui,
+                                 int parent, const char *name, struct setup_widget *widget)
+{
+    SDL_Rect area;
+    const int node = frontend_gui_find(gui, parent, name);
+    if (province_bind_rect(gui, parent, name, &area) &&
+        setup_widget_load_node(widget, menu->renderer, menu->asset_root, gui, node, area) < 0)
+        SDL_ClearError();
+}
+
 static int load_holding_layout(struct menu *menu, SDL_Texture *background)
 {
     struct frontend_gui gui = {0};
@@ -707,18 +748,73 @@ static int load_holding_layout(struct menu *menu, SDL_Texture *background)
     static const char *const templates[] = {"capital_entry", "settlement_entry"};
     bool valid = frontend_gui_rect(&gui, panel, viewport, &menu->holding_panel) &&
                  frontend_gui_rect(&gui, capital, viewport, &menu->holding_capital);
-    frontend_gui_rect(&gui, frontend_gui_find(&gui, panel, "pv_county_shield"),
-                      viewport, &menu->province_shield_area);
-    /* The original province window is dismissible, independently of map navigation.
-     * Keep the close hit target anchored to province.gui, not a screen pixel. */
+    if (!valid) { frontend_gui_free(&gui); return SDL_SetError("Missing province or capital GUI position"); }
+
+    /* The original panel's size={1024,224} is a container, NOT the visible
+     * background. The close button at x=320 and 3x109px holdings establish
+     * its 344px playable width. Stretch the matching CK2 sprite only when
+     * an installed mod provides a smaller copy. */
+    menu->holding_panel.w = 344;
+    menu->holding_panel.h = HEIGHT - menu->holding_panel.y;
+    if (!background) valid = false;
+    if (setup_widget_load_sprite(&menu->province_skin.background, menu->renderer,
+          menu->asset_root, "interface/province.gfx", "GFX_province_bg",
+          menu->holding_panel) < 0) SDL_ClearError();
+
+    province_bind_rect(&gui, panel, "pv_county_shield", &menu->province_shield_area);
     const int close_id = frontend_gui_find(&gui, panel, "button_close");
     SDL_Rect close_area = {0};
     if (frontend_gui_rect(&gui, close_id, viewport, &close_area)) {
-        if (setup_widget_load_sprite(&menu->province_close, menu->renderer, menu->asset_root,
-                "interface/generalstuff.gfx", "GFX_main_close_button", close_area) < 0)
+        if (setup_widget_load_node(&menu->province_close, menu->renderer,
+                menu->asset_root, &gui, close_id, close_area) < 0)
             SDL_ClearError();
         menu->province_close.area = close_area;
     }
+    struct province_panel_skin *skin = &menu->province_skin;
+    province_bind_rect(&gui, panel, "ruler_portrait", &skin->ruler_portrait);
+    province_bind_rect(&gui, panel, "province_name", &skin->name);
+    province_bind_rect(&gui, panel, "kingdom", &skin->kingdom);
+    province_bind_rect(&gui, panel, "duchy", &skin->duchy);
+    province_bind_rect(&gui, panel, "culture", &skin->culture);
+    province_bind_rect(&gui, panel, "religion", &skin->religion);
+    province_bind_rect(&gui, panel, "label_culture", &skin->culture_label);
+    province_bind_rect(&gui, panel, "label_religion", &skin->religion_label);
+    province_bind_rect(&gui, panel, "total_tax_value", &skin->tax_amount);
+    province_bind_rect(&gui, panel, "label_supply_limit", &skin->supply_label);
+    province_bind_rect(&gui, panel, "label_revoltrisk", &skin->revolt_label);
+    static const char *const tech_value_nodes[3] = {
+        "miltech_value", "ecotech_value", "cultech_value"
+    };
+    for (int t=0; t<3; ++t)
+        province_bind_rect(&gui, panel, tech_value_nodes[t], &skin->tech_amount[t]);
+    province_bind_rect(&gui, panel, "kingdom_shield", &skin->kingdom_shield);
+    province_bind_rect(&gui, panel, "duchy_shield", &skin->duchy_shield);
+    province_bind_widget(menu, &gui, panel, "ruler_portrait_frame", &skin->portrait_frame);
+    province_bind_widget(menu, &gui, panel, "county_crown", &skin->county_crown);
+    province_bind_widget(menu, &gui, panel, "show_region_info", &skin->region_info);
+    province_bind_widget(menu, &gui, panel, "button_raise_levy", &skin->raise_levy);
+    province_bind_widget(menu, &gui, panel, "button_raise_ships", &skin->raise_ships);
+    province_bind_widget(menu, &gui, panel, "hospital_level_button", &skin->temple_button);
+    province_bind_widget(menu, &gui, panel, "capital_icon", &skin->capital_icon);
+    province_bind_widget(menu, &gui, panel, "make_crown_focus", &skin->crown_focus);
+    province_bind_widget(menu, &gui, panel, "icon_tax", &skin->tax_icon);
+    province_bind_widget(menu, &gui, panel, "icon_strait", &skin->strait_icon);
+    province_bind_widget(menu, &gui, panel, "icon_route", &skin->route_icon);
+    static const char *const tech_icon_nodes[3] = {
+        "icon_miltech", "icon_ecotech", "icon_cultech"
+    };
+    for (int t=0; t<3; ++t)
+        province_bind_widget(menu,&gui,panel,tech_icon_nodes[t],&skin->tech_icons[t]);
+    if (setup_widget_load_sprite(&skin->levy_progress_bg, menu->renderer, menu->asset_root,
+               "interface/province.gfx", "GFX_levy_progress_bg", (SDL_Rect){0}) < 0)
+        SDL_ClearError();
+    if (setup_widget_load_sprite(&skin->garrison_icon, menu->renderer, menu->asset_root,
+               "interface/end_of_combat.gfx", "GFX_combat_siege_end_garrison", (SDL_Rect){0}) < 0)
+        SDL_ClearError();
+    if (setup_widget_load_sprite(&skin->levy_icon, menu->renderer, menu->asset_root,
+               "interface/end_of_combat.gfx", "GFX_combat_siege_end_levy", (SDL_Rect){0}) < 0)
+        SDL_ClearError();
+
     for (int i = 0; valid && i < 2; ++i) {
         const int box = frontend_gui_find(&gui, panel, boxes[i]);
         const int row = frontend_gui_find(&gui, -1, templates[i]);
@@ -730,9 +826,8 @@ static int load_holding_layout(struct menu *menu, SDL_Texture *background)
                 frontend_gui_rect(&gui, art, viewport, &menu->holding_art_area[i]) &&
                 frontend_gui_rect(&gui, frame, viewport, &menu->holding_frame_area[i]) &&
                 menu->holding_templates[i].w > 0;
-        /* Older capital entries may lack this element; use only when authored. */
-        menu->holding_owner_frame_valid[i] = frontend_gui_rect(
-                &gui, owner_frame, viewport, &menu->holding_owner_frame_area[i]);
+        menu->holding_owner_frame_valid[i] = frontend_gui_rect(&gui, owner_frame, viewport,
+                                                              &menu->holding_owner_frame_area[i]);
         menu->holding_art_scale[i] = 1;
         if (valid) {
             char scale[24], *end;
@@ -741,6 +836,9 @@ static int load_holding_layout(struct menu *menu, SDL_Texture *background)
             if (*scale && !*end && value > 0 && value <= 4)
                 menu->holding_art_scale[i] = value;
         }
+        static const char *const shields[3] = {"holder_shield", "control_shield", "realm_shield"};
+        for (int s = 0; s < 3; ++s)
+            province_bind_rect(&gui, row, shields[s], &skin->owner_shield[i][s]);
     }
     if (valid)
         bind_wonder_widget(menu, &gui, panel, "open_wonder_view", &menu->wonder.button);
@@ -751,13 +849,23 @@ static int load_holding_layout(struct menu *menu, SDL_Texture *background)
         menu->holding_owner_frame_texture = owner.texture;
     else SDL_ClearError();
     frontend_gui_free(&gui);
-    if (!valid)
-        return SDL_SetError("interface/province.gui: missing campaign holding layout");
-    int panel_width = 0;
-    SDL_QueryTexture(background, NULL, NULL, &panel_width, NULL);
-    const int slot_width = menu->holding_templates[1].w;
-    menu->holding_columns = SDL_max(1, SDL_min(menu->holding_rows[0].w / slot_width,
-        (panel_width - (menu->holding_rows[0].x - menu->holding_panel.x)) / slot_width));
+    if (!valid) return SDL_SetError("interface/province.gui: missing campaign holding layout");
+    /* capital_position is an independent positionType: it has no province
+     * parent. The settlement box positions do have that parent. */
+    struct province_layout_rect region = {menu->holding_panel.x, menu->holding_panel.y,
+                                          menu->holding_panel.w, menu->holding_panel.h};
+    struct province_layout_rect cap = {region.x + menu->holding_capital.x,
+        region.y + menu->holding_capital.y,
+        menu->holding_templates[0].w, menu->holding_templates[0].h};
+    struct province_layout_rect rows[2];
+    for (int i = 0; i < 2; ++i)
+        rows[i] = (struct province_layout_rect){menu->holding_rows[i].x, menu->holding_rows[i].y,
+                         menu->holding_rows[i].w, menu->holding_rows[i].h};
+    if (!province_layout_init(&skin->grid, region, cap, rows,
+                              menu->holding_templates[1].w, menu->holding_templates[1].h))
+        return SDL_SetError("Could not fit original CK2 holding slots inside province panel");
+    menu->holding_columns = skin->grid.columns;
+    skin->loaded = true;
     menu->holding_layout_ready = true;
     return 0;
 }
@@ -771,18 +879,10 @@ static SDL_Rect place_holding_texture(SDL_Texture *texture, SDL_Rect origin, SDL
 
 static bool holding_origin(const struct menu *menu, size_t index, SDL_Rect *origin)
 {
-    if (!index) {
-        *origin = menu->holding_panel;
-        origin->x += menu->holding_capital.x;
-        origin->y += menu->holding_capital.y;
-        return true;
-    }
-    const size_t columns = (size_t)menu->holding_columns;
-    const size_t row = (index - 1) / columns;
-    if (row >= SDL_arraysize(menu->holding_rows))
+    struct province_layout_rect rect;
+    if (!province_layout_slot(&menu->province_skin.grid, index, &rect))
         return false;
-    *origin = menu->holding_rows[row];
-    origin->x += (int)((index - 1) % columns) * menu->holding_templates[1].w;
+    *origin = (SDL_Rect){rect.x, rect.y, rect.w, rect.h};
     return true;
 }
 
@@ -794,7 +894,9 @@ static void clear_holding_style(struct menu *menu)
         menu->styled_holding_art[i] = NULL;
     }
     SDL_DestroyTexture(menu->styled_holding_frame);
+    SDL_DestroyTexture(menu->styled_holding_capital);
     menu->styled_holding_frame = NULL;
+    menu->styled_holding_capital = NULL;
     menu->holding_style_key[0] = '\0';
 }
 
@@ -803,9 +905,29 @@ static void refresh_holding_style(struct menu *menu)
     const struct map_settlement_marker *marker = map_settlement_by_id(&menu->settlement_scene,
                                                    menu->selected ? menu->selected->id : 0);
     const char *style = marker && marker->graphical[0] ? marker->graphical : "westerngfx";
-    if (!strcmp(style, menu->holding_style_key)) return;
+    const char *religion = menu->holdings.religion_key;
+    char style_key[160];
+    SDL_snprintf(style_key,sizeof style_key,"%s|%s",style,religion);
+    if (!strcmp(style_key,menu->holding_style_key)) return;
     clear_holding_style(menu);
-    SDL_strlcpy(menu->holding_style_key, style, sizeof menu->holding_style_key);
+    SDL_strlcpy(menu->holding_style_key,style_key,sizeof menu->holding_style_key);
+    char religious_graphic[64] = "westerngfx";
+    if (*religion) {
+        struct ck2_asset_files files = ck2_list_assets(menu->asset_root,"common/religions");
+        for (size_t k=0; k<files.count; ++k) {
+            const char *file=files.names[k];
+            const size_t length=strlen(file);
+            if (length < 4 || strcmp(file+length-4,".txt")) continue;
+            char *data=load_from_directory(menu->asset_root,"common/religions",file);
+            if (data) {
+                char candidate[64];
+                if (religion_gfx_from_text(data,religion,candidate,sizeof candidate))
+                    SDL_strlcpy(religious_graphic,candidate,sizeof religious_graphic);
+                SDL_free(data);
+            }
+        }
+        ck2_free_asset_files(&files);
+    }
     static const char *const names[HOLDING_TYPE_COUNT] = {
         NULL, "GFX_settlement_castle", "GFX_settlement_city", NULL,
         "GFX_settlement_tribal", "GFX_settlement_nomad"
@@ -827,7 +949,8 @@ static void refresh_holding_style(struct menu *menu)
     /* Temple art is a combination of settlement and religious graphical
      * styles; use the original western-gfx fallback pending religion gfx. */
     char temple[160];
-    SDL_snprintf(temple, sizeof temple, "GFX_settlement_temple_%s_westerngfx", style);
+    SDL_snprintf(temple, sizeof temple, "GFX_settlement_temple_%s_%s", style,
+                 religious_graphic);
     struct setup_widget widget = {0};
     if (setup_widget_load_sprite(&widget, menu->renderer, menu->asset_root,
           "interface/province.gfx", temple, (SDL_Rect){0}) < 0) {
@@ -844,19 +967,48 @@ static void refresh_holding_style(struct menu *menu)
           "interface/province.gfx", temple, (SDL_Rect){0}) == 0)
         menu->styled_holding_frame = widget.texture;
     else SDL_ClearError();
+    SDL_snprintf(temple, sizeof temple, "GFX_province_capital_settlement_frame_%s", style);
+    widget = (struct setup_widget){0};
+    if (setup_widget_load_sprite(&widget, menu->renderer, menu->asset_root,
+          "interface/province.gfx", temple, (SDL_Rect){0}) == 0)
+        menu->styled_holding_capital = widget.texture;
+    else SDL_ClearError();
+}
+
+static void draw_small_title_flag(SDL_Renderer *renderer, SDL_Texture *flag, SDL_Rect rect)
+{
+    if (!flag || rect.w <= 0 || rect.h <= 0) return;
+    /* The title art is itself a shield silhouette. Do not stretch it into a
+     * square or substitute a dynasty flag for a barony owner. */
+    int w=0,h=0;
+    SDL_QueryTexture(flag, NULL, NULL, &w, &h);
+    if (w <= 0 || h <= 0) return;
+    const int bound_w = rect.w > 60 ? 60 : rect.w;
+    const int bound_h = rect.h > 70 ? 70 : rect.h;
+    const float scale = SDL_min((float)bound_w/w, (float)bound_h/h);
+    const SDL_Rect target = {rect.x + (bound_w - (int)(w*scale))/2,
+        rect.y + (bound_h-(int)(h*scale))/2, (int)(w*scale), (int)(h*scale)};
+    if (target.w > 0 && target.h > 0) SDL_RenderCopy(renderer, flag, NULL, &target);
 }
 
 static void draw_campaign_holdings(SDL_Renderer *renderer, const struct menu_assets *assets,
                                    const struct menu *menu)
 {
     const struct county_holdings *county = &menu->holdings;
+    const struct province_panel_skin *skin = &menu->province_skin;
+    /* Original CK2 has a wider virtual list for the DLC-extended view. That
+     * list MUST NOT paint through the map in the ordinary province window. */
+    SDL_Rect previous_clip;
+    const SDL_bool clipped = SDL_RenderIsClipEnabled(renderer);
+    SDL_RenderGetClipRect(renderer, &previous_clip);
+    SDL_RenderSetClipRect(renderer, &menu->holding_panel);
     for (size_t i = 0; i < county->capacity; ++i) {
         SDL_Rect origin;
-        if (!holding_origin(menu, i, &origin))
-            break;
+        if (!holding_origin(menu, i, &origin)) break;
         const int template = i ? 1 : 0;
         SDL_Texture *frame = i ? (menu->styled_holding_frame ? menu->styled_holding_frame
-                                    : assets->holding_frame) : assets->holding_capital;
+                                    : assets->holding_frame) :
+            (menu->styled_holding_capital ? menu->styled_holding_capital : assets->holding_capital);
         const struct holding *slot = i < county->count ? &county->slots[i] : NULL;
         const enum holding_type kind = slot ? slot->type : HOLDING_EMPTY;
         SDL_Texture *art = menu->styled_holding_art[kind] ?
@@ -864,23 +1016,38 @@ static void draw_campaign_holdings(SDL_Renderer *renderer, const struct menu_ass
         if (!frame) continue;
         const SDL_Rect frame_rect = place_holding_texture(frame, origin, menu->holding_frame_area[template], 1);
         SDL_RenderCopy(renderer, frame, NULL, &frame_rect);
-        /* A missing culture/religion-specific texture is not a black holding:
-         * retain the authored frame and leave its interior empty. */
+        /* This is a backdrop, not an outline: it MUST render before the
+         * painting. The old order covered every populated holding with an
+         * opaque black owner frame; empty slots alone remained visible. */
+        if (slot && menu->holding_owner_frame_texture && menu->holding_owner_frame_valid[template]) {
+            const SDL_Rect owner = place_holding_texture(menu->holding_owner_frame_texture,
+                      origin, menu->holding_owner_frame_area[template], 1);
+            SDL_RenderCopy(renderer, menu->holding_owner_frame_texture, NULL, &owner);
+        }
         if (art) {
             const SDL_Rect art_rect = place_holding_texture(art, origin,
                 menu->holding_art_area[template], menu->holding_art_scale[template]);
             SDL_RenderCopy(renderer, art, NULL, &art_rect);
         }
-        if (slot && menu->holding_owner_frame_texture &&
-            menu->holding_owner_frame_valid[template]) {
-            const SDL_Rect owner = place_holding_texture(menu->holding_owner_frame_texture,
-                      origin, menu->holding_owner_frame_area[template], 1);
-            SDL_RenderCopy(renderer, menu->holding_owner_frame_texture, NULL, &owner);
+        if (slot && skin->barony_flags[i]) {
+            SDL_Rect label = skin->owner_shield[template][0];
+            label.x += origin.x;
+            label.y += origin.y;
+            label.w = 30; label.h = 34;
+            draw_small_title_flag(renderer, skin->barony_flags[i], label);
+            /* Only the actual barony title is shown until distinct controller
+             * and realm ownership are available; never invent their crests. */
         }
-        if (SDL_PointInRect(&menu->pointer, &frame_rect))
-            campaign_text(renderer, assets, slot ? (*slot->name ? slot->name : slot->id) : "Empty holding slot",
-                          menu->holding_panel.x + 174, menu->holding_rows[0].y - 26);
+        if (slot && skin->levy_progress_bg.texture) {
+            for (int j = 0; j < 2; ++j) {
+                SDL_Rect bar = {origin.x + (template ? (j ? 68 : 16) : (j ? 81 : 24)),
+                                origin.y + (template ? 90 : 118), 0, 0};
+                SDL_QueryTexture(skin->levy_progress_bg.texture, NULL, NULL, &bar.w, &bar.h);
+                SDL_RenderCopy(renderer, skin->levy_progress_bg.texture, NULL, &bar);
+            }
+        }
     }
+    SDL_RenderSetClipRect(renderer, clipped ? &previous_clip : NULL);
 }
 
 static void setup_label(SDL_Renderer *, const struct menu_assets *, const char *, SDL_Rect, int);
@@ -1662,6 +1829,7 @@ static bool character_government_tooltip(SDL_Renderer *renderer, const struct me
     return true;
 }
 
+static void province_draw_header(SDL_Renderer *, const struct menu_assets *, const struct menu *);
 static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *assets,
                           const struct menu *menu)
 {
@@ -1672,7 +1840,11 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
     blit(renderer, assets->hud_resources_right, 1422, 0);
     blit(renderer, assets->hud_outliner, 1324, 213);
     if (!menu->character.open && menu->selected) {
-        blit(renderer, assets->hud_province, menu->holding_panel.x, menu->holding_panel.y);
+        /* Province background is rendered to the authored control span, rather
+         * than relying on an incorrectly small installed DDS variant. */
+        SDL_RenderCopy(renderer, menu->province_skin.background.texture ?
+        menu->province_skin.background.texture : assets->hud_province,
+        NULL, &menu->holding_panel);
         if (menu->province_close.texture)
             setup_widget_draw(&menu->province_close, renderer, menu->pointer);
         if (menu->province_title_shield) {
@@ -1684,7 +1856,6 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
     blit(renderer, assets->hud_minimap, 1320, 696);
     blit(renderer, assets->hud_map, 1329, 705);
 
-    char line[160];
     draw_campaign_topbar(renderer, assets, menu);
     campaign_text(renderer, assets, ck2_localize("OUTLINER", "Outliner"), 1420, 220);
 
@@ -1693,24 +1864,8 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
         character_view_draw(&menu->character, renderer, assets, menu->character.ruler.id == menu->campaign_ruler_id,
                             &menu->campaign, menu->pointer, centered_text);
     } else if (menu->selected) {
-        const int center = 174;
-        if (menu->selected)
-            campaign_text(renderer, assets, menu->selected->name, center, 291);
-        const bool owns_selection = menu->selected && menu->selected->id == menu->home_province;
-        campaign_text(renderer, assets, owns_selection ? "Your county" : "Outside your county", 99, 349);
-        snprintf(line, sizeof line, "+%.2f gold/month (direct)", campaign_monthly_income(&menu->campaign));
-        campaign_text(renderer, assets, line, 99, 379);
-        snprintf(line, sizeof line, "%s: %s", ck2_localize("CULTURE", "Culture"),
-                 menu->holdings.culture_name[0] ? menu->holdings.culture_name : "Not in history");
-        campaign_text(renderer, assets, line, 147, 407);
-        snprintf(line, sizeof line, "%s: %s", ck2_localize("RELIGION", "Religion"),
-                 menu->holdings.religion_name[0] ? menu->holdings.religion_name : "Not in history");
-        campaign_text(renderer, assets, line, 147, 431);
-        snprintf(line, sizeof line, "Holdings: %zu / %zu", menu->holdings.count, menu->holdings.capacity);
-        SDL_SetTextureColorMod(assets->font, 36, 26, 16);
-        campaign_text(renderer, assets, line, center, 600);
-        SDL_SetTextureColorMod(assets->font, 255, 255, 255);
-
+        province_draw_header(renderer, assets, menu);
+        /* Counts belong on the bottom parchment, not over the castle image. */
         if (menu->selected)
             draw_campaign_holdings(renderer, assets, menu);
         if (menu->wonder.id[0] && menu->wonder.button.texture)
@@ -1803,6 +1958,157 @@ static void draw_campaign(SDL_Renderer *renderer, const struct menu_assets *asse
     }
 }
 
+static SDL_Texture *setup_character_portrait(struct menu *, const struct ruler_profile *);
+
+static void province_clear_history_art(struct menu *menu)
+{
+    struct province_panel_skin *skin = &menu->province_skin;
+    SDL_DestroyTexture(skin->portrait); skin->portrait = NULL;
+    SDL_DestroyTexture(skin->kingdom_flag); skin->kingdom_flag = NULL;
+    SDL_DestroyTexture(skin->duchy_flag); skin->duchy_flag = NULL;
+    SDL_DestroyTexture(skin->independent_flag); skin->independent_flag = NULL;
+    for (size_t i=0; i<SDL_arraysize(skin->barony_flags); ++i) {
+        SDL_DestroyTexture(skin->barony_flags[i]); skin->barony_flags[i] = NULL;
+    }
+}
+
+static void province_refresh_history_art(struct menu *menu)
+{
+    struct province_panel_skin *skin = &menu->province_skin;
+    province_clear_history_art(menu);
+    if (!menu->selected || !menu->realms.history) return;
+    const size_t index = (size_t)(menu->selected - menu->provinces.provinces);
+    struct realm_province_ownership ownership;
+    if (!realm_province_ownership(&menu->realms, index, &ownership) ||
+        !ownership.has_county) return;
+    const struct ruler_profile *ruler = realm_ruler(&menu->realms, ownership.county.holder);
+    skin->portrait = setup_character_portrait(menu, ruler);
+    if (ownership.has_independent) {
+        const struct ruler_profile *top = realm_ruler(&menu->realms, ownership.independent.holder);
+        skin->independent_flag = era_title_shield(menu->renderer, menu->asset_root,
+                ownership.independent.id, top ? top->religion_key : "");
+    }
+    /* Follow dated de-jure title relationships, not the current independent
+     * ruler. CK2 keeps duchy/kingdom hierarchy separate from allegiance. */
+    struct realm_title_info t = ownership.county;
+    for (unsigned depth=0; depth<8; ++depth) {
+        struct realm_title_info parent;
+        if (!realm_dejure_parent_info(&menu->realms, t.id, &parent)) break;
+        if (parent.id[0] == 'd' && !skin->duchy_flag) {
+            skin->duchy_flag = era_title_shield(menu->renderer, menu->asset_root,
+                                                parent.id, ruler ? ruler->religion_key : "");
+        } else if (parent.id[0] == 'k' && !skin->kingdom_flag) {
+            skin->kingdom_flag = era_title_shield(menu->renderer, menu->asset_root,
+                                                 parent.id, ruler ? ruler->religion_key : "");
+        }
+        if (!strcmp(t.id, parent.id)) break;
+        t = parent;
+    }
+    for (size_t i=0; i<menu->holdings.count && i<HOLDING_LIMIT; ++i) {
+        struct realm_title_info barony;
+        if (!realm_title_info(&menu->realms, menu->holdings.slots[i].id, &barony) ||
+            !barony.holder) continue;
+        const struct ruler_profile *baron = realm_ruler(&menu->realms, barony.holder);
+        struct realm_title_info primary;
+        /* CK2's holding owner crest is the holder's primary title arms, not
+         * necessarily the barony title. This is why a king's holdings show
+         * their kingdom arms repeatedly in the original province screen. */
+        const char *arms = realm_primary_title(&menu->realms, barony.holder, &primary)
+            ? primary.id : barony.id;
+        skin->barony_flags[i] = era_title_shield(menu->renderer, menu->asset_root,
+                                  arms, baron ? baron->religion_key : "");
+    }
+}
+
+static void province_draw_header(SDL_Renderer *renderer, const struct menu_assets *assets,
+                                 const struct menu *menu)
+{
+    const struct province_panel_skin *skin = &menu->province_skin;
+    if (!menu->selected) return;
+    const SDL_bool clipped = SDL_RenderIsClipEnabled(renderer);
+    SDL_Rect previous;
+    SDL_RenderGetClipRect(renderer, &previous);
+    SDL_RenderSetClipRect(renderer, &menu->holding_panel);
+    if (skin->portrait) {
+        SDL_Rect dest = skin->ruler_portrait;
+        dest.w = dest.h = 100;
+        SDL_RenderCopy(renderer, skin->portrait, NULL, &dest);
+    }
+    if (skin->portrait_frame.texture) setup_widget_draw(&skin->portrait_frame, renderer, (SDL_Point){-1,-1});
+    if (skin->county_crown.texture) setup_widget_draw(&skin->county_crown, renderer, (SDL_Point){-1,-1});
+    if (skin->region_info.texture) setup_widget_draw(&skin->region_info, renderer, menu->pointer);
+    if (skin->crown_focus.texture) setup_widget_draw(&skin->crown_focus, renderer, menu->pointer);
+    if (skin->capital_icon.texture) setup_widget_draw(&skin->capital_icon, renderer, (SDL_Point){-1,-1});
+    if (skin->raise_levy.texture) setup_widget_draw(&skin->raise_levy, renderer, menu->pointer);
+    if (skin->raise_ships.texture) setup_widget_draw(&skin->raise_ships, renderer, menu->pointer);
+    /* Header name and landed hierarchy follow province.gui, not guessed
+     * center coordinates from the OpenCK2 development panel. */
+    campaign_text(renderer, assets, menu->selected->name,
+                  skin->name.x + skin->name.w / 2, skin->name.y);
+    const size_t ix=(size_t)(menu->selected-menu->provinces.provinces);
+    struct realm_province_ownership ownership;
+    if (realm_province_ownership(&menu->realms, ix, &ownership) && ownership.has_county) {
+        struct realm_title_info t = ownership.county;
+        for (unsigned depth=0; depth<8; ++depth) {
+            struct realm_title_info parent;
+            if (!realm_dejure_parent_info(&menu->realms, t.id, &parent)) break;
+            if (parent.id[0]=='d') campaign_text(renderer,assets,parent.name,
+                skin->duchy.x + skin->duchy.w/2,skin->duchy.y);
+            if (parent.id[0]=='k') campaign_text(renderer,assets,parent.name,
+                skin->kingdom.x + skin->kingdom.w/2,skin->kingdom.y);
+            if (!strcmp(t.id,parent.id)) break;
+            t=parent;
+        }
+    }
+    if (skin->independent_flag) {
+        /* province_tier_shield3 at (260,22), authored in province.gui */
+        draw_small_title_flag(renderer,skin->independent_flag,
+          (SDL_Rect){menu->holding_panel.x+260,menu->holding_panel.y+22,54,63});
+    }
+    draw_small_title_flag(renderer,skin->duchy_flag,
+          (SDL_Rect){skin->duchy_shield.x,skin->duchy_shield.y,30,34});
+    draw_small_title_flag(renderer,skin->kingdom_flag,
+          (SDL_Rect){skin->kingdom_shield.x,skin->kingdom_shield.y,30,34});
+    if (skin->tax_icon.texture) setup_widget_draw(&skin->tax_icon,renderer,(SDL_Point){-1,-1});
+    for (int t=0; t<3; ++t)
+        if (skin->tech_icons[t].texture)
+            setup_widget_draw(&skin->tech_icons[t],renderer,(SDL_Point){-1,-1});
+    /* Tax is a known sum of authored base incomes and built upgrades. It is
+     * NOT labelled a levy, revolt risk or advanced-CK2 final tax amount. */
+    double annual = 0;
+    bool known = true;
+    for (size_t j=0; j<menu->holdings.count; ++j) {
+        double part = 0;
+        if (!construction_holding_annual_tax(&menu->construction,&menu->holdings.slots[j],&part)) {
+            known=false; break;
+        }
+        annual += part;
+    }
+    SDL_SetTextureColorMod(assets->font,35,28,21);
+    if (known) {
+        char amount[48];
+        SDL_snprintf(amount,sizeof amount,"%.1f / yr",annual);
+        campaign_text(renderer,assets,amount,skin->tax_amount.x + skin->tax_amount.w/2,
+                      skin->tax_amount.y);
+    }
+    campaign_text(renderer,assets,ck2_localize("CULTURE","Culture"),
+                  skin->culture_label.x+skin->culture_label.w/2,skin->culture_label.y);
+    campaign_text(renderer,assets,ck2_localize("RELIGION","Religion"),
+                  skin->religion_label.x+skin->religion_label.w/2,skin->religion_label.y);
+    campaign_text(renderer,assets,ck2_localize("SUPPLY","Supply"),
+                  skin->supply_label.x+skin->supply_label.w/2,skin->supply_label.y);
+    campaign_text(renderer,assets,ck2_localize("PLOTS_REVOLTRISK","Revolt Risk"),
+                  skin->revolt_label.x+skin->revolt_label.w/2,skin->revolt_label.y);
+    if (menu->holdings.culture_name[0])
+        campaign_text(renderer,assets,menu->holdings.culture_name,
+            skin->culture.x+skin->culture.w/2,skin->culture.y);
+    if (menu->holdings.religion_name[0])
+        campaign_text(renderer,assets,menu->holdings.religion_name,
+            skin->religion.x+skin->religion.w/2,skin->religion.y);
+    SDL_SetTextureColorMod(assets->font,255,255,255);
+    SDL_RenderSetClipRect(renderer,clipped ? &previous : NULL);
+}
+
 static void refresh_province_title_shield(struct menu *menu)
 {
     SDL_DestroyTexture(menu->province_title_shield);
@@ -1832,6 +2138,7 @@ static void select_province(struct menu *menu, const struct province *province)
         if (!province) {
             menu->holdings = (struct county_holdings){0};
             menu->holding_province = 0;
+            province_clear_history_art(menu);
             return;
         }
         holdings_load(&menu->holdings, menu->asset_root, province, menu->start_date);
@@ -1843,6 +2150,7 @@ static void select_province(struct menu *menu, const struct province *province)
         construction_settlement_apply(&menu->construction, id, &menu->holdings);
         menu->holding_province = id;
     }
+    province_refresh_history_art(menu);
     menu->province_overlay = province ? province_highlight(&menu->provinces, menu->renderer,
                                                             province, &menu->campaign_map) : NULL;
 }
@@ -2412,7 +2720,7 @@ static SDL_Texture *setup_character_portrait(struct menu *menu, const struct rul
         menu->portrait_source_loaded = true;
     }
     struct era_ruler ruler = {.id = profile->id, .age = profile->age,
-        .portrait_year = menu->era.eras[menu->era.selected].date.year,
+        .portrait_year = menu->start_date.year,
         .female = profile->female, .age_known = profile->age_known};
     SDL_strlcpy(ruler.dna, profile->dna, sizeof ruler.dna);
     SDL_strlcpy(ruler.properties, profile->properties, sizeof ruler.properties);
@@ -3352,7 +3660,7 @@ static void handle_event(struct menu *menu, SDL_Window *window, const SDL_Event 
             if (menu->screen == CAMPAIGN && menu->selected && !menu->character.open &&
                 !menu->building_open && !menu->wonder.open &&
                 menu->province_close.area.w > 0 &&
-                SDL_PointInRect(&point, &menu->province_close.area)) {
+                SDL_PointInRect(&(SDL_Point){x, y}, &menu->province_close.area)) {
                 select_province(menu, NULL);
                 break;
             }
@@ -3618,6 +3926,22 @@ cleanup:
     menu_music_stop(&menu.music);
     preview_portrait(&menu, NULL);
     clear_holding_style(&menu);
+    province_clear_history_art(&menu);
+    struct setup_widget *province_widgets[] = {
+        &menu.province_close, &menu.province_skin.background,
+        &menu.province_skin.portrait_frame,
+        &menu.province_skin.county_crown, &menu.province_skin.region_info,
+        &menu.province_skin.raise_levy, &menu.province_skin.raise_ships,
+        &menu.province_skin.temple_button, &menu.province_skin.capital_icon,
+        &menu.province_skin.levy_progress_bg, &menu.province_skin.garrison_icon,
+        &menu.province_skin.levy_icon, &menu.province_skin.tax_icon,
+        &menu.province_skin.strait_icon, &menu.province_skin.route_icon,
+        &menu.province_skin.crown_focus,
+        &menu.province_skin.tech_icons[0], &menu.province_skin.tech_icons[1],
+        &menu.province_skin.tech_icons[2],
+    };
+    for (size_t i=0; i<SDL_arraysize(province_widgets); ++i)
+        SDL_DestroyTexture(province_widgets[i]->texture);
     map_title_shields_clear(&menu);
     SDL_DestroyTexture(menu.holding_owner_frame_texture);
     SDL_DestroyTexture(menu.province_title_shield);

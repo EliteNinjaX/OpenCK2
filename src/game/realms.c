@@ -414,6 +414,18 @@ bool realm_title_info(const struct realm_map *map, const char *id, struct realm_
     return true;
 }
 
+bool realm_dejure_parent_info(const struct realm_map *map, const char *id, struct realm_title_info *out)
+{
+    const struct realm_history *h = map ? map->history : NULL;
+    if (!h || !id || !out) return false;
+    const int child = title_index(h->titles, h->count, id);
+    if (child < 0 || !h->titles[child].parent[0]) return false;
+    const int parent = title_index(h->titles, h->count, h->titles[child].parent);
+    if (parent < 0) return false;
+    title_info(&h->titles[parent], out);
+    return true;
+}
+
 size_t realm_held_titles(const struct realm_map *map, unsigned holder, struct realm_title_info *out, size_t capacity)
 {
     const struct realm_history *history = map->history;
